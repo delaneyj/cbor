@@ -2,8 +2,6 @@
 
 package {{.Package}}
 
-import cbor "github.com/delaneyj/cbor/runtime"
-
 {{range .Structs}}
 {{if .MsgSizeExpr}}
 func (x {{.Name}}) Msgsize() (s int) {
@@ -14,10 +12,10 @@ func (x {{.Name}}) Msgsize() (s int) {
 
 func (x *{{.Name}}) MarshalCBOR(b []byte) ([]byte, error) {
 	if x == nil {
-		return cbor.AppendNil(b), nil
+		return AppendNil(b), nil
 	}
 {{if .MsgSizeExpr}}
-	b = cbor.Require(b, x.Msgsize())
+	b = Require(b, x.Msgsize())
 {{end}}
 {{if $.UseOmit}}
 	{{- if .HasOmit }}
@@ -29,9 +27,9 @@ func (x *{{.Name}}) MarshalCBOR(b []byte) ([]byte, error) {
 	count++
 {{- end }}
 {{- end }}
-	b = cbor.AppendMapHeader(b, count)
+	b = AppendMapHeader(b, count)
 	{{- else }}
-	b = cbor.AppendMapHeader(b, uint32({{len .Fields}}))
+	b = AppendMapHeader(b, uint32({{len .Fields}}))
 	{{- end }}
 	var err error
 {{- range .Fields }}
@@ -40,11 +38,11 @@ func (x *{{.Name}}) MarshalCBOR(b []byte) ([]byte, error) {
 		{{- if .EncodeBlock }}
 		{{.EncodeBlock}}
 		{{- else }}
-		b = cbor.AppendString(b, "{{.CBORName}}")
+		b = AppendString(b, "{{.CBORName}}")
 			{{- if .EncodeExpr }}
 		b, err = {{.EncodeExpr}}
 			{{- else }}
-		b, err = cbor.AppendInterface(b, x.{{.GoName}})
+		b, err = AppendInterface(b, x.{{.GoName}})
 			{{- end }}
 		if err != nil { return b, err }
 		{{- end }}
@@ -53,28 +51,28 @@ func (x *{{.Name}}) MarshalCBOR(b []byte) ([]byte, error) {
 	{{- if .EncodeBlock }}
 	{{.EncodeBlock}}
 	{{- else }}
-	b = cbor.AppendString(b, "{{.CBORName}}")
+	b = AppendString(b, "{{.CBORName}}")
 		{{- if .EncodeExpr }}
 	b, err = {{.EncodeExpr}}
 		{{- else }}
-	b, err = cbor.AppendInterface(b, x.{{.GoName}})
+	b, err = AppendInterface(b, x.{{.GoName}})
 		{{- end }}
 	if err != nil { return b, err }
 	{{- end }}
 {{- end }}
 {{- end }}
 {{else}}
-	b = cbor.AppendMapHeader(b, {{len .Fields}})
+	b = AppendMapHeader(b, {{len .Fields}})
 	var err error
 {{- range .Fields }}
 	{{- if .EncodeBlock }}
 	{{.EncodeBlock}}
 	{{- else }}
-	b = cbor.AppendString(b, "{{.CBORName}}")
+	b = AppendString(b, "{{.CBORName}}")
 		{{- if .EncodeExpr }}
 	b, err = {{.EncodeExpr}}
 		{{- else }}
-	b, err = cbor.AppendInterface(b, x.{{.GoName}})
+	b, err = AppendInterface(b, x.{{.GoName}})
 		{{- end }}
 	if err != nil { return b, err }
 	{{- end }}
@@ -86,14 +84,14 @@ func (x *{{.Name}}) MarshalCBOR(b []byte) ([]byte, error) {
 // DecodeSafe decodes using validated, allocating string handling.
 func (x *{{.Name}}) DecodeSafe(b []byte) ([]byte, error) {
 	if x == nil {
-		return b, cbor.ErrNotNil
+		return b, ErrNotNil
 	}
-	sz, rest, err := cbor.ReadMapHeaderBytes(b)
+	sz, rest, err := ReadMapHeaderBytes(b)
 	if err != nil {
 		return b, err
 	}
 	for i := uint32(0); i < sz; i++ {
-		key, v, err := cbor.ReadStringBytes(rest)
+		key, v, err := ReadStringBytes(rest)
 		if err != nil {
 			return b, err
 		}
@@ -103,7 +101,7 @@ func (x *{{.Name}}) DecodeSafe(b []byte) ([]byte, error) {
 			{{.DecodeCaseSafe}}
 {{- end }}
 		default:
-			v, err = cbor.Skip(v)
+			v, err = Skip(v)
 			if err != nil {
 				return b, err
 			}
@@ -116,25 +114,25 @@ func (x *{{.Name}}) DecodeSafe(b []byte) ([]byte, error) {
 // DecodeTrusted decodes using zero-copy strings and no per-string UTF-8 validation.
 func (x *{{.Name}}) DecodeTrusted(b []byte) ([]byte, error) {
 	if x == nil {
-		return b, cbor.ErrNotNil
+		return b, ErrNotNil
 	}
-	sz, rest, err := cbor.ReadMapHeaderBytes(b)
+	sz, rest, err := ReadMapHeaderBytes(b)
 	if err != nil {
 		return b, err
 	}
 	for i := uint32(0); i < sz; i++ {
-		keyBytes, v, err := cbor.ReadStringZC(rest)
+		keyBytes, v, err := ReadStringZC(rest)
 		if err != nil {
 			return b, err
 		}
-		key := cbor.UnsafeString(keyBytes)
+		key := UnsafeString(keyBytes)
 		switch key {
 {{- range .Fields }}
 		case "{{.CBORName}}":
 			{{.DecodeCaseTrust}}
 {{- end }}
 		default:
-			v, err = cbor.Skip(v)
+			v, err = Skip(v)
 			if err != nil {
 				return b, err
 			}

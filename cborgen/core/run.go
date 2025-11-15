@@ -46,6 +46,13 @@ func Run(inputPath, outputPath string, opts Options) error {
 	}
 
 	pkg := file.Name.Name
+	// Ensure the amalgamated runtime exists in the target
+	// package directory so generated code has no external
+	// dependency on github.com/delaneyj/cbor at runtime.
+	if err := ensureRuntime(filepath.Dir(outputPath), pkg); err != nil {
+		return err
+	}
+
 	return generateStructCode(fset, file, outputPath, pkg, opts)
 }
 
@@ -286,7 +293,7 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 					generatedStructs[ss.Name] = struct{}{}
 				if len(sizeExprParts) > 0 {
 					// Map header plus per-field key/value contributions.
-					ss.MsgSizeExpr = "cbor.MapHeaderSize" + " + " + strings.Join(sizeExprParts, " + ")
+					ss.MsgSizeExpr = "MapHeaderSize" + " + " + strings.Join(sizeExprParts, " + ")
 				}
 				structs = append(structs, ss)
 			}
@@ -422,7 +429,7 @@ var encodeBlockTemplate = template.Must(template.New("encode_block").ParseFS(tmp
 // is written in terms of receiver 'x'. It returns ok=false if the type
 // is not supported for Msgsize.
 func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool) {
-	key := fmt.Sprintf("cbor.StringPrefixSize + len(%q)", cborName)
+	key := fmt.Sprintf("StringPrefixSize + len(%q)", cborName)
 	fieldRef := "x." + goName
 	val := ""
 
@@ -430,33 +437,33 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 	case *ast.Ident:
 		switch t.Name {
 		case "string":
-			val = "cbor.StringPrefixSize + len(" + fieldRef + ")"
+			val = "StringPrefixSize + len(" + fieldRef + ")"
 		case "bool":
-			val = "cbor.BoolSize"
+			val = "BoolSize"
 		case "int":
-			val = "cbor.IntSize"
+			val = "IntSize"
 		case "int64":
-			val = "cbor.Int64Size"
+			val = "Int64Size"
 		case "int32", "rune":
-			val = "cbor.Int32Size"
+			val = "Int32Size"
 		case "int16":
-			val = "cbor.Int16Size"
+			val = "Int16Size"
 		case "int8":
-			val = "cbor.Int8Size"
+			val = "Int8Size"
 		case "uint":
-			val = "cbor.UintSize"
+			val = "UintSize"
 		case "uint64":
-			val = "cbor.Uint64Size"
+			val = "Uint64Size"
 		case "uint32":
-			val = "cbor.Uint32Size"
+			val = "Uint32Size"
 		case "uint16":
-			val = "cbor.Uint16Size"
+			val = "Uint16Size"
 		case "uint8", "byte":
-			val = "cbor.Uint8Size"
+			val = "Uint8Size"
 		case "float32":
-			val = "cbor.Float32Size"
+			val = "Float32Size"
 		case "float64":
-			val = "cbor.Float64Size"
+			val = "Float64Size"
 		default:
 			return "", false
 		}
@@ -464,9 +471,9 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 		// Support common time-based primitives.
 		switch t.Sel.Name {
 		case "Time":
-			val = "cbor.TimeSize"
+			val = "TimeSize"
 		case "Duration":
-			val = "cbor.DurationSize"
+			val = "DurationSize"
 		default:
 			return "", false
 		}
@@ -477,45 +484,45 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 		}
 		// []byte: use bytes prefix + len(slice)
 		if ident.Name == "byte" {
-			val = "cbor.BytesPrefixSize + len(" + fieldRef + ")"
+			val = "BytesPrefixSize + len(" + fieldRef + ")"
 		} else {
-			// Other supported scalar slices: approximate as header + len(slice)*elemSize.
+				// Other supported scalar slices: approximate as header + len(slice)*elemSize.
 			var elem string
 			switch ident.Name {
 			case "string":
 				// Prefix per element; data length is accounted for elsewhere at runtime.
-				elem = "cbor.StringPrefixSize"
+				elem = "StringPrefixSize"
 			case "bool":
-				elem = "cbor.BoolSize"
+				elem = "BoolSize"
 			case "int":
-				elem = "cbor.IntSize"
+				elem = "IntSize"
 			case "int64":
-				elem = "cbor.Int64Size"
+				elem = "Int64Size"
 			case "int32", "rune":
-				elem = "cbor.Int32Size"
+				elem = "Int32Size"
 			case "int16":
-				elem = "cbor.Int16Size"
+				elem = "Int16Size"
 			case "int8":
-				elem = "cbor.Int8Size"
+				elem = "Int8Size"
 			case "uint":
-				elem = "cbor.UintSize"
+				elem = "UintSize"
 			case "uint64":
-				elem = "cbor.Uint64Size"
+				elem = "Uint64Size"
 			case "uint32":
-				elem = "cbor.Uint32Size"
+				elem = "Uint32Size"
 			case "uint16":
-				elem = "cbor.Uint16Size"
+				elem = "Uint16Size"
 			case "uint8", "byte":
-				elem = "cbor.Uint8Size"
+				elem = "Uint8Size"
 			case "float32":
-				elem = "cbor.Float32Size"
+				elem = "Float32Size"
 			case "float64":
-				elem = "cbor.Float64Size"
+				elem = "Float64Size"
 			default:
 				// Unknown element types are not sized.
 				elem = "0"
 			}
-			val = "cbor.ArrayHeaderSize + len(" + fieldRef + ")*" + elem
+			val = "ArrayHeaderSize + len(" + fieldRef + ")*" + elem
 		}
 	case *ast.MapType:
 		// map[string]T: approximate as header plus per-entry constant.
@@ -528,38 +535,38 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 		switch valIdent.Name {
 		case "string":
 			// Prefix for the value; data length is accounted for elsewhere at runtime.
-			elem = "cbor.StringPrefixSize"
+			elem = "StringPrefixSize"
 		case "bool":
-			elem = "cbor.BoolSize"
+			elem = "BoolSize"
 		case "int":
-			elem = "cbor.IntSize"
+			elem = "IntSize"
 		case "int64":
-			elem = "cbor.Int64Size"
+			elem = "Int64Size"
 		case "int32", "rune":
-			elem = "cbor.Int32Size"
+			elem = "Int32Size"
 		case "int16":
-			elem = "cbor.Int16Size"
+			elem = "Int16Size"
 		case "int8":
-			elem = "cbor.Int8Size"
+			elem = "Int8Size"
 		case "uint":
-			elem = "cbor.UintSize"
+			elem = "UintSize"
 		case "uint64":
-			elem = "cbor.Uint64Size"
+			elem = "Uint64Size"
 		case "uint32":
-			elem = "cbor.Uint32Size"
+			elem = "Uint32Size"
 		case "uint16":
-			elem = "cbor.Uint16Size"
+			elem = "Uint16Size"
 		case "uint8", "byte":
-			elem = "cbor.Uint8Size"
+			elem = "Uint8Size"
 		case "float32":
-			elem = "cbor.Float32Size"
+			elem = "Float32Size"
 		case "float64":
-			elem = "cbor.Float64Size"
+			elem = "Float64Size"
 		default:
 			// Fallback: only header + key prefix per entry.
 			elem = "0"
 		}
-		val = "cbor.MapHeaderSize + len(" + fieldRef + ")*(cbor.StringPrefixSize + " + elem + ")"
+		val = "MapHeaderSize + len(" + fieldRef + ")*(StringPrefixSize + " + elem + ")"
 	default:
 		return "", false
 	}
@@ -1429,33 +1436,33 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 		// avoid the overhead of AppendInterface in hot paths.
 		switch t.Name {
 		case "string":
-			return "cbor.AppendString(b, " + field + "), nil"
+			return "AppendString(b, " + field + "), nil"
 		case "bool":
-			return "cbor.AppendBool(b, " + field + "), nil"
+			return "AppendBool(b, " + field + "), nil"
 		case "int":
-			return "cbor.AppendInt(b, " + field + "), nil"
+			return "AppendInt(b, " + field + "), nil"
 		case "int8":
-			return "cbor.AppendInt8(b, " + field + "), nil"
+			return "AppendInt8(b, " + field + "), nil"
 		case "int16":
-			return "cbor.AppendInt16(b, " + field + "), nil"
+			return "AppendInt16(b, " + field + "), nil"
 		case "int32", "rune":
-			return "cbor.AppendInt32(b, " + field + "), nil"
+			return "AppendInt32(b, " + field + "), nil"
 		case "int64":
-			return "cbor.AppendInt64(b, " + field + "), nil"
+			return "AppendInt64(b, " + field + "), nil"
 		case "uint":
-			return "cbor.AppendUint(b, " + field + "), nil"
+			return "AppendUint(b, " + field + "), nil"
 		case "uint8", "byte":
-			return "cbor.AppendUint8(b, " + field + "), nil"
+			return "AppendUint8(b, " + field + "), nil"
 		case "uint16":
-			return "cbor.AppendUint16(b, " + field + "), nil"
+			return "AppendUint16(b, " + field + "), nil"
 		case "uint32":
-			return "cbor.AppendUint32(b, " + field + "), nil"
+			return "AppendUint32(b, " + field + "), nil"
 		case "uint64":
-			return "cbor.AppendUint64(b, " + field + "), nil"
+			return "AppendUint64(b, " + field + "), nil"
 		case "float32":
-			return "cbor.AppendFloat32(b, " + field + "), nil"
+			return "AppendFloat32(b, " + field + "), nil"
 		case "float64":
-			return "cbor.AppendFloat64(b, " + field + "), nil"
+			return "AppendFloat64(b, " + field + "), nil"
 		}
 		// For non-primitive identifiers, assume a struct type with
 		// a generated or user-defined MarshalCBOR method.
@@ -1468,7 +1475,7 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 			return ""
 		}
 		if ident, ok := t.Elt.(*ast.Ident); ok && ident.Name == "string" {
-			return "cbor.AppendStringSlice(b, " + field + "), nil"
+			return "AppendStringSlice(b, " + field + "), nil"
 		}
 
 	case *ast.MapType:
@@ -1481,14 +1488,14 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 		}
 		if keyIdent.Name == "string" {
 			if valIdent, okVal := t.Value.(*ast.Ident); okVal && valIdent.Name == "string" {
-				return "cbor.AppendMapStrStr(b, " + field + "), nil"
+				return "AppendMapStrStr(b, " + field + "), nil"
 			}
 		}
 
 	case *ast.StarExpr:
 		// *T where T is exported; assume *T implements Marshaler.
 		if ident, ok := t.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
-			return "cbor.AppendPtrMarshaler(b, " + field + ")"
+			return "AppendPtrMarshaler(b, " + field + ")"
 		}
 
 	case *ast.SelectorExpr:
@@ -1499,13 +1506,13 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 			case "time":
 				switch t.Sel.Name {
 				case "Time":
-					return "cbor.AppendTime(b, " + field + "), nil"
+					return "AppendTime(b, " + field + "), nil"
 				case "Duration":
-					return "cbor.AppendDuration(b, " + field + "), nil"
+					return "AppendDuration(b, " + field + "), nil"
 				}
 			case "json":
 				if t.Sel.Name == "RawMessage" {
-					return "cbor.AppendBytes(b, []byte(" + field + ")), nil"
+					return "AppendBytes(b, []byte(" + field + ")), nil"
 				}
 			}
 		}
