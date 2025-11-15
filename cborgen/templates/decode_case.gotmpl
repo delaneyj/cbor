@@ -37,6 +37,9 @@ Inputs:
 		} else {
 			x.{{.Field}} = make([]{{.VarType}}, sz)
 		}
+		if sz > 0 {
+			_ = x.{{.Field}}[sz-1]
+		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var tmp {{.VarType}}
 			tmp, v, err = cbor.{{.ReadFunc}}(v)
@@ -52,9 +55,7 @@ Inputs:
 		if x.{{.Field}} == nil && sz > 0 {
 			x.{{.Field}} = make(map[string]{{.VarType}}, sz)
 		} else if x.{{.Field}} != nil {
-			for k := range x.{{.Field}} {
-				delete(x.{{.Field}}, k)
-			}
+			clear(x.{{.Field}})
 		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var key string
@@ -67,6 +68,55 @@ Inputs:
 		}
 {{end}}
 
+{{define "decodeCaseMapUint64Ptr"}}
+		var sz uint32
+		sz, v, err = cbor.ReadMapHeaderBytes(v)
+		if err != nil { return b, err }
+		if x.{{.Field}} == nil && sz > 0 {
+			x.{{.Field}} = make(map[uint64]*{{.VarType}}, sz)
+		} else if x.{{.Field}} != nil {
+			clear(x.{{.Field}})
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			var key uint64
+			key, v, err = cbor.ReadUint64Bytes(v)
+			if err != nil { return b, err }
+			if len(v) == 0 { return b, cbor.ErrShortBytes }
+			if v[0] == 0xf6 { // null
+				var tmpBytes []byte
+				tmpBytes, err = cbor.ReadNilBytes(v)
+				if err != nil { return b, err }
+				v = tmpBytes
+				x.{{.Field}}[key] = nil
+				continue
+			}
+			tmp := new({{.VarType}})
+			v, err = tmp.UnmarshalCBOR(v)
+			if err != nil { return b, err }
+			x.{{.Field}}[key] = tmp
+		}
+{{end}}
+
+{{define "decodeCaseMapUint64Uint64"}}
+		var sz uint32
+		sz, v, err = cbor.ReadMapHeaderBytes(v)
+		if err != nil { return b, err }
+		if x.{{.Field}} == nil && sz > 0 {
+			x.{{.Field}} = make(map[uint64]uint64, sz)
+		} else if x.{{.Field}} != nil {
+			clear(x.{{.Field}})
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			var key uint64
+			key, v, err = cbor.ReadUint64Bytes(v)
+			if err != nil { return b, err }
+			var val uint64
+			val, v, err = cbor.ReadUint64Bytes(v)
+			if err != nil { return b, err }
+			x.{{.Field}}[key] = val
+		}
+{{end}}
+
 {{define "decodeCaseSliceStruct"}}
 		var sz uint32
 		sz, v, err = cbor.ReadArrayHeaderBytes(v)
@@ -75,6 +125,9 @@ Inputs:
 			x.{{.Field}} = x.{{.Field}}[:sz]
 		} else {
 			x.{{.Field}} = make([]{{.VarType}}, sz)
+		}
+		if sz > 0 {
+			_ = x.{{.Field}}[sz-1]
 		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var tmp {{.VarType}}
@@ -93,6 +146,9 @@ Inputs:
 		} else {
 			x.{{.Field}} = make([]{{.VarType}}, sz)
 		}
+		if sz > 0 {
+			_ = x.{{.Field}}[sz-1]
+		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var tmp {{.VarType}}
 			v, err = (&tmp).DecodeTrusted(v)
@@ -110,6 +166,9 @@ Inputs:
 		} else {
 			x.{{.Field}} = make([]*{{.VarType}}, sz)
 		}
+		if sz > 0 {
+			_ = x.{{.Field}}[sz-1]
+		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			if x.{{.Field}}[i{{.Field}}] == nil { x.{{.Field}}[i{{.Field}}] = new({{.VarType}}) }
 			v, err = x.{{.Field}}[i{{.Field}}].UnmarshalCBOR(v)
@@ -126,6 +185,9 @@ Inputs:
 		} else {
 			x.{{.Field}} = make([]*{{.VarType}}, sz)
 		}
+		if sz > 0 {
+			_ = x.{{.Field}}[sz-1]
+		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			if x.{{.Field}}[i{{.Field}}] == nil { x.{{.Field}}[i{{.Field}}] = new({{.VarType}}) }
 			v, err = x.{{.Field}}[i{{.Field}}].DecodeTrusted(v)
@@ -140,7 +202,7 @@ Inputs:
 		if x.{{.Field}} == nil && sz > 0 {
 			x.{{.Field}} = make(map[string]{{.VarType}}, sz)
 		} else if x.{{.Field}} != nil {
-			for k := range x.{{.Field}} { delete(x.{{.Field}}, k) }
+			clear(x.{{.Field}})
 		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var key string
@@ -160,7 +222,7 @@ Inputs:
 		if x.{{.Field}} == nil && sz > 0 {
 			x.{{.Field}} = make(map[string]{{.VarType}}, sz)
 		} else if x.{{.Field}} != nil {
-			for k := range x.{{.Field}} { delete(x.{{.Field}}, k) }
+			clear(x.{{.Field}})
 		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var key string
@@ -180,7 +242,7 @@ Inputs:
 		if x.{{.Field}} == nil && sz > 0 {
 			x.{{.Field}} = make(map[string]*{{.VarType}}, sz)
 		} else if x.{{.Field}} != nil {
-			for k := range x.{{.Field}} { delete(x.{{.Field}}, k) }
+			clear(x.{{.Field}})
 		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var key string
@@ -200,7 +262,7 @@ Inputs:
 		if x.{{.Field}} == nil && sz > 0 {
 			x.{{.Field}} = make(map[string]*{{.VarType}}, sz)
 		} else if x.{{.Field}} != nil {
-			for k := range x.{{.Field}} { delete(x.{{.Field}}, k) }
+			clear(x.{{.Field}})
 		}
 		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
 			var key string

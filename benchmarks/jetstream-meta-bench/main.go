@@ -10,12 +10,13 @@ import (
 	"time"
 
 	jsonv2 "github.com/go-json-experiment/json"
-	"github.com/delaneyj/cbor/tests/jetstreammeta"
+	js "github.com/delaneyj/cbor/tests/jetstreammeta"
+	msgpjs "github.com/delaneyj/cbor/benchmarks/jetstreammeta_msgp"
 )
 
 type benchResult struct {
-	Name          string
-	Size          int
+	Name             string
+	Size             int
 	EncNsPerOp       float64
 	EncMBPerSec      float64
 	EncAllocsPerOp   float64
@@ -24,22 +25,22 @@ type benchResult struct {
 	DecMBPerSec      float64
 	DecAllocsPerOp   float64
 	DecMemBytesPerOp float64
-	Err           error
+	Err              error
 }
 
 func main() {
-	streams := flag.Int("streams", jetstreammeta.DefaultNumStreams, "number of streams")
-	consumers := flag.Int("consumers", jetstreammeta.DefaultNumConsumers, "number of consumers per stream")
+	streams := flag.Int("streams", js.DefaultNumStreams, "number of streams")
+	consumers := flag.Int("consumers", js.DefaultNumConsumers, "number of consumers per stream")
 	flag.Parse()
 
 	fmt.Fprintf(os.Stderr, "Building JetStream meta snapshot fixture (streams=%d, consumers=%d) ...\n", *streams, *consumers)
-	snap := jetstreammeta.BuildMetaSnapshotFixture(*streams, *consumers)
+	snap := js.BuildMetaSnapshotFixture(*streams, *consumers)
 	view := buildSnapshotView(snap)
 
 	cborBuf, cborErr := snap.MarshalCBOR(nil)
 	jsonBuf, jsonErr := json.Marshal(snap)
 	jsonV2Buf, jsonV2Err := jsonv2.Marshal(view)
-	msgSnap := jetstreammeta.ToMsgpMetaSnapshot(snap)
+	msgSnap := msgpjs.ToMsgpMetaSnapshot(snap)
 	msgpBuf, msgpErr := msgSnap.MarshalMsg(nil)
 
 	rows := make([]benchResult, 0, 4)
@@ -69,7 +70,7 @@ func main() {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				var dst jetstreammeta.MetaSnapshot
+				var dst js.MetaSnapshot
 				rest, err := dst.DecodeTrusted(cborBuf)
 				if err != nil || len(rest) != 0 {
 					b.Fatalf("DecodeTrusted: %v (rest=%d)", err, len(rest))
@@ -100,7 +101,7 @@ func main() {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				var dst jetstreammeta.MetaSnapshot
+				var dst js.MetaSnapshot
 				if err := json.Unmarshal(jsonBuf, &dst); err != nil {
 					b.Fatalf("json.Unmarshal: %v", err)
 				}
@@ -163,7 +164,7 @@ func main() {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				var dst jetstreammeta.MsgpMetaSnapshot
+				var dst msgpjs.MsgpMetaSnapshot
 				rest, err := dst.UnmarshalMsg(msgpBuf)
 				if err != nil || len(rest) != 0 {
 					b.Fatalf("UnmarshalMsg: %v (rest=%d)", err, len(rest))
@@ -206,7 +207,7 @@ func runCodecBench(name string, size int, err error, enc, dec func(b *testing.B)
 	return res
 }
 
-func buildSnapshotView(snap jetstreammeta.MetaSnapshot) map[string]any {
+func buildSnapshotView(snap js.MetaSnapshot) map[string]any {
 	streams := make([]any, 0, len(snap.Streams))
 	for i := range snap.Streams {
 		streams = append(streams, buildStreamView(&snap.Streams[i]))
@@ -214,7 +215,7 @@ func buildSnapshotView(snap jetstreammeta.MetaSnapshot) map[string]any {
 	return map[string]any{"streams": streams}
 }
 
-func buildStreamView(s *jetstreammeta.WriteableStreamAssignment) map[string]any {
+func buildStreamView(s *js.WriteableStreamAssignment) map[string]any {
 	m := map[string]any{
 		"created": s.Created.Format(time.RFC3339Nano),
 		"stream":  s.ConfigJSON,
@@ -236,7 +237,7 @@ func buildStreamView(s *jetstreammeta.WriteableStreamAssignment) map[string]any 
 	return m
 }
 
-func buildClientView(ci *jetstreammeta.ClientInfo) map[string]any {
+func buildClientView(ci *js.ClientInfo) map[string]any {
 	m := map[string]any{}
 	if ci.Account != "" {
 		m["acc"] = ci.Account
@@ -253,7 +254,7 @@ func buildClientView(ci *jetstreammeta.ClientInfo) map[string]any {
 	return m
 }
 
-func buildGroupView(rg *jetstreammeta.RaftGroup) map[string]any {
+func buildGroupView(rg *js.RaftGroup) map[string]any {
 	m := map[string]any{
 		"name":  rg.Name,
 		"peers": append([]string(nil), rg.Peers...),
@@ -271,7 +272,7 @@ func buildGroupView(rg *jetstreammeta.RaftGroup) map[string]any {
 	return m
 }
 
-func buildConsumerView(ca *jetstreammeta.WriteableConsumerAssignment) map[string]any {
+func buildConsumerView(ca *js.WriteableConsumerAssignment) map[string]any {
 	m := map[string]any{
 		"created":  ca.Created.Format(time.RFC3339Nano),
 		"name":     ca.Name,
@@ -290,7 +291,7 @@ func buildConsumerView(ca *jetstreammeta.WriteableConsumerAssignment) map[string
 	return m
 }
 
-func buildConsumerStateView(cs *jetstreammeta.ConsumerState) map[string]any {
+func buildConsumerStateView(cs *js.ConsumerState) map[string]any {
 	m := map[string]any{
 		"delivered": buildSequencePairView(cs.Delivered),
 		"ack_floor": buildSequencePairView(cs.AckFloor),
@@ -315,7 +316,7 @@ func buildConsumerStateView(cs *jetstreammeta.ConsumerState) map[string]any {
 	return m
 }
 
-func buildSequencePairView(sp jetstreammeta.SequencePair) map[string]any {
+func buildSequencePairView(sp js.SequencePair) map[string]any {
 	return map[string]any{
 		"consumer_seq": sp.Consumer,
 		"stream_seq":   sp.Stream,
@@ -359,3 +360,4 @@ func printTable(rows []benchResult, streams, consumers int) {
 	}
 	_ = tw.Flush()
 }
+

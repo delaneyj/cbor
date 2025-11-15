@@ -1,6 +1,10 @@
-package jetstreammeta
+package jetstreammeta_msgp
 
-import "fmt"
+import (
+	"fmt"
+
+	js "github.com/delaneyj/cbor/tests/jetstreammeta"
+)
 
 // MsgpMetaSnapshot and its nested types mirror the structure of
 // MetaSnapshot but are dedicated to tinylib/msgp code generation so
@@ -12,22 +16,22 @@ type MsgpMetaSnapshot struct {
 }
 
 type MsgpWriteableStreamAssignment struct {
-	Client     *MsgpClientInfo                  `msg:"client,omitempty"`
-	Created    int64                            `msg:"created"` // unix nanos
-	ConfigJSON []byte                           `msg:"stream"`
-	Group      *MsgpRaftGroup                   `msg:"group"`
-	Sync       string                           `msg:"sync"`
+	Client     *MsgpClientInfo                    `msg:"client,omitempty"`
+	Created    int64                              `msg:"created"` // unix nanos
+	ConfigJSON []byte                             `msg:"stream"`
+	Group      *MsgpRaftGroup                     `msg:"group"`
+	Sync       string                             `msg:"sync"`
 	Consumers  []*MsgpWriteableConsumerAssignment `msg:"consumers,omitempty"`
 }
 
 type MsgpWriteableConsumerAssignment struct {
-	Client     *MsgpClientInfo  `msg:"client,omitempty"`
-	Created    int64            `msg:"created"`
-	Name       string           `msg:"name"`
-	Stream     string           `msg:"stream"`
-	ConfigJSON []byte           `msg:"consumer"`
-	Group      *MsgpRaftGroup   `msg:"group"`
-	State      *MsgpConsumerState `msg:"state,omitempty"`
+	Client     *MsgpClientInfo       `msg:"client,omitempty"`
+	Created    int64                 `msg:"created"`
+	Name       string                `msg:"name"`
+	Stream     string                `msg:"stream"`
+	ConfigJSON []byte                `msg:"consumer"`
+	Group      *MsgpRaftGroup        `msg:"group"`
+	State      *MsgpConsumerState    `msg:"state,omitempty"`
 }
 
 type MsgpClientInfo struct {
@@ -57,15 +61,15 @@ type MsgpPending struct {
 }
 
 type MsgpConsumerState struct {
-	Delivered   MsgpSequencePair           `msg:"delivered"`
-	AckFloor    MsgpSequencePair           `msg:"ack_floor"`
-	Pending     map[string]*MsgpPending    `msg:"pending,omitempty"`
-	Redelivered map[string]uint64          `msg:"redelivered,omitempty"`
+	Delivered   MsgpSequencePair        `msg:"delivered"`
+	AckFloor    MsgpSequencePair        `msg:"ack_floor"`
+	Pending     map[string]*MsgpPending `msg:"pending,omitempty"`
+	Redelivered map[string]uint64       `msg:"redelivered,omitempty"`
 }
 
 // ToMsgpMetaSnapshot converts the MetaSnapshot used for cborgen into
 // the MsgpMetaSnapshot used for msgp benchmarks.
-func ToMsgpMetaSnapshot(snap MetaSnapshot) MsgpMetaSnapshot {
+func ToMsgpMetaSnapshot(snap js.MetaSnapshot) MsgpMetaSnapshot {
 	out := MsgpMetaSnapshot{Streams: make([]MsgpWriteableStreamAssignment, 0, len(snap.Streams))}
 	for i := range snap.Streams {
 		out.Streams = append(out.Streams, toMsgpStream(&snap.Streams[i]))
@@ -73,7 +77,7 @@ func ToMsgpMetaSnapshot(snap MetaSnapshot) MsgpMetaSnapshot {
 	return out
 }
 
-func toMsgpStream(s *WriteableStreamAssignment) MsgpWriteableStreamAssignment {
+func toMsgpStream(s *js.WriteableStreamAssignment) MsgpWriteableStreamAssignment {
 	ms := MsgpWriteableStreamAssignment{
 		Client:     toMsgpClient(s.Client),
 		Created:    s.Created.UnixNano(),
@@ -90,7 +94,7 @@ func toMsgpStream(s *WriteableStreamAssignment) MsgpWriteableStreamAssignment {
 	return ms
 }
 
-func toMsgpClient(ci *ClientInfo) *MsgpClientInfo {
+func toMsgpClient(ci *js.ClientInfo) *MsgpClientInfo {
 	if ci == nil {
 		return nil
 	}
@@ -102,7 +106,7 @@ func toMsgpClient(ci *ClientInfo) *MsgpClientInfo {
 	}
 }
 
-func toMsgpGroup(rg *RaftGroup) *MsgpRaftGroup {
+func toMsgpGroup(rg *js.RaftGroup) *MsgpRaftGroup {
 	if rg == nil {
 		return nil
 	}
@@ -117,7 +121,7 @@ func toMsgpGroup(rg *RaftGroup) *MsgpRaftGroup {
 	return mg
 }
 
-func toMsgpConsumer(ca *WriteableConsumerAssignment) *MsgpWriteableConsumerAssignment {
+func toMsgpConsumer(ca *js.WriteableConsumerAssignment) *MsgpWriteableConsumerAssignment {
 	if ca == nil {
 		return nil
 	}
@@ -135,7 +139,7 @@ func toMsgpConsumer(ca *WriteableConsumerAssignment) *MsgpWriteableConsumerAssig
 	return mc
 }
 
-func toMsgpState(cs *ConsumerState) *MsgpConsumerState {
+func toMsgpState(cs *js.ConsumerState) *MsgpConsumerState {
 	ms := &MsgpConsumerState{
 		Delivered: MsgpSequencePair{Consumer: cs.Delivered.Consumer, Stream: cs.Delivered.Stream},
 		AckFloor:  MsgpSequencePair{Consumer: cs.AckFloor.Consumer, Stream: cs.AckFloor.Stream},
@@ -154,3 +158,4 @@ func toMsgpState(cs *ConsumerState) *MsgpConsumerState {
 	}
 	return ms
 }
+

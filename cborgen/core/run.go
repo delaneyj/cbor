@@ -969,74 +969,93 @@ func decodeCaseExprSafe(structName, goName string, typ ast.Expr) (string, bool) 
 		}
 		return "", false
 	case *ast.MapType:
-		// map[string]T containers
-		keyIdent, okKey := t.Key.(*ast.Ident)
-		if !okKey || keyIdent.Name != "string" {
-			return "", false
-		}
-		// map[string]scalar via template, or map[string]struct via dedicated template
-		if valIdent, okVal := t.Value.(*ast.Ident); okVal {
-			switch valIdent.Name {
-			case "string":
-				data.VarType = "string"
-				data.ReadFunc = "ReadStringBytes"
-			case "bool":
-				data.VarType = "bool"
-				data.ReadFunc = "ReadBoolBytes"
-			case "int":
-				data.VarType = "int"
-				data.ReadFunc = "ReadIntBytes"
-			case "int64":
-				data.VarType = "int64"
-				data.ReadFunc = "ReadInt64Bytes"
-			case "int32", "rune":
-				data.VarType = "int32"
-				data.ReadFunc = "ReadInt32Bytes"
-			case "int16":
-				data.VarType = "int16"
-				data.ReadFunc = "ReadInt16Bytes"
-			case "int8":
-				data.VarType = "int8"
-				data.ReadFunc = "ReadInt8Bytes"
-			case "uint":
-				data.VarType = "uint"
-				data.ReadFunc = "ReadUintBytes"
-			case "uint64":
-				data.VarType = "uint64"
-				data.ReadFunc = "ReadUint64Bytes"
-			case "uint32":
-				data.VarType = "uint32"
-				data.ReadFunc = "ReadUint32Bytes"
-			case "uint16":
-				data.VarType = "uint16"
-				data.ReadFunc = "ReadUint16Bytes"
-			case "uint8", "byte":
-				data.VarType = "uint8"
-				data.ReadFunc = "ReadUint8Bytes"
-			case "float32":
-				data.VarType = "float32"
-				data.ReadFunc = "ReadFloat32Bytes"
-			case "float64":
-				data.VarType = "float64"
-				data.ReadFunc = "ReadFloat64Bytes"
-			default:
-				data.VarType = valIdent.Name
-				tmplName = "decodeCaseMapStrStruct"
+			// map[K]T containers
+			keyIdent, okKey := t.Key.(*ast.Ident)
+			if !okKey {
+				return "", false
 			}
-			if tmplName == "" {
-				tmplName = "decodeCaseMapStrBasic"
+			// Numeric-key maps we know how to handle: map[uint64]*T, map[uint64]uint64
+			if keyIdent.Name == "uint64" {
+				if star, okVal := t.Value.(*ast.StarExpr); okVal {
+					if ident, ok2 := star.X.(*ast.Ident); ok2 {
+						data.VarType = ident.Name
+						tmplName = "decodeCaseMapUint64Ptr"
+						break
+					}
+				}
+				if valIdent, okVal := t.Value.(*ast.Ident); okVal && valIdent.Name == "uint64" {
+					tmplName = "decodeCaseMapUint64Uint64"
+					break
+				}
+				return "", false
 			}
-			break
-		}
-		// map[string]*T where T has UnmarshalCBOR
-		if star, okVal := t.Value.(*ast.StarExpr); okVal {
-			if ident, ok2 := star.X.(*ast.Ident); ok2 {
-				data.VarType = ident.Name
-				tmplName = "decodeCaseMapStrPtrStruct"
+			// map[string]T containers
+			if keyIdent.Name != "string" {
+				return "", false
+			}
+			// map[string]scalar via template, or map[string]struct via dedicated template
+			if valIdent, okVal := t.Value.(*ast.Ident); okVal {
+				switch valIdent.Name {
+				case "string":
+					data.VarType = "string"
+					data.ReadFunc = "ReadStringBytes"
+				case "bool":
+					data.VarType = "bool"
+					data.ReadFunc = "ReadBoolBytes"
+				case "int":
+					data.VarType = "int"
+					data.ReadFunc = "ReadIntBytes"
+				case "int64":
+					data.VarType = "int64"
+					data.ReadFunc = "ReadInt64Bytes"
+				case "int32", "rune":
+					data.VarType = "int32"
+					data.ReadFunc = "ReadInt32Bytes"
+				case "int16":
+					data.VarType = "int16"
+					data.ReadFunc = "ReadInt16Bytes"
+				case "int8":
+					data.VarType = "int8"
+					data.ReadFunc = "ReadInt8Bytes"
+				case "uint":
+					data.VarType = "uint"
+					data.ReadFunc = "ReadUintBytes"
+				case "uint64":
+					data.VarType = "uint64"
+					data.ReadFunc = "ReadUint64Bytes"
+				case "uint32":
+					data.VarType = "uint32"
+					data.ReadFunc = "ReadUint32Bytes"
+				case "uint16":
+					data.VarType = "uint16"
+					data.ReadFunc = "ReadUint16Bytes"
+				case "uint8", "byte":
+					data.VarType = "uint8"
+					data.ReadFunc = "ReadUint8Bytes"
+				case "float32":
+					data.VarType = "float32"
+					data.ReadFunc = "ReadFloat32Bytes"
+				case "float64":
+					data.VarType = "float64"
+					data.ReadFunc = "ReadFloat64Bytes"
+				default:
+					data.VarType = valIdent.Name
+					tmplName = "decodeCaseMapStrStruct"
+				}
+				if tmplName == "" {
+					tmplName = "decodeCaseMapStrBasic"
+				}
 				break
 			}
-		}
-		return "", false
+			// map[string]*T where T has UnmarshalCBOR
+			if star, okVal := t.Value.(*ast.StarExpr); okVal {
+				if ident, ok2 := star.X.(*ast.Ident); ok2 {
+					data.VarType = ident.Name
+					tmplName = "decodeCaseMapStrPtrStruct"
+					break
+				}
+			}
+			return "", false
 	case *ast.StarExpr:
 		// Pointer to user-defined type with UnmarshalCBOR.
 		if ident, ok := t.X.(*ast.Ident); ok {

@@ -370,6 +370,9 @@ func (x *ClientInfo) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Alternates = make([]string, sz)
 			}
+			if sz > 0 {
+				_ = x.Alternates[sz-1]
+			}
 			for iAlternates := uint32(0); iAlternates < sz; iAlternates++ {
 				var tmp string
 				tmp, v, err = cbor.ReadStringBytes(v)
@@ -419,6 +422,9 @@ func (x *ClientInfo) DecodeSafe(b []byte) ([]byte, error) {
 				x.Tags = x.Tags[:sz]
 			} else {
 				x.Tags = make([]string, sz)
+			}
+			if sz > 0 {
+				_ = x.Tags[sz-1]
 			}
 			for iTags := uint32(0); iTags < sz; iTags++ {
 				var tmp string
@@ -593,6 +599,9 @@ func (x *ClientInfo) DecodeTrusted(b []byte) ([]byte, error) {
 			} else {
 				x.Alternates = make([]string, sz)
 			}
+			if sz > 0 {
+				_ = x.Alternates[sz-1]
+			}
 			for iAlternates := uint32(0); iAlternates < sz; iAlternates++ {
 				var tmp string
 				tmp, v, err = cbor.ReadStringBytes(v)
@@ -642,6 +651,9 @@ func (x *ClientInfo) DecodeTrusted(b []byte) ([]byte, error) {
 				x.Tags = x.Tags[:sz]
 			} else {
 				x.Tags = make([]string, sz)
+			}
+			if sz > 0 {
+				_ = x.Tags[sz-1]
 			}
 			for iTags := uint32(0); iTags < sz; iTags++ {
 				var tmp string
@@ -802,6 +814,9 @@ func (x *RaftGroup) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Peers = make([]string, sz)
 			}
+			if sz > 0 {
+				_ = x.Peers[sz-1]
+			}
 			for iPeers := uint32(0); iPeers < sz; iPeers++ {
 				var tmp string
 				tmp, v, err = cbor.ReadStringBytes(v)
@@ -886,6 +901,9 @@ func (x *RaftGroup) DecodeTrusted(b []byte) ([]byte, error) {
 				x.Peers = x.Peers[:sz]
 			} else {
 				x.Peers = make([]string, sz)
+			}
+			if sz > 0 {
+				_ = x.Peers[sz-1]
 			}
 			for iPeers := uint32(0); iPeers < sz; iPeers++ {
 				var tmp string
@@ -1261,15 +1279,66 @@ func (x *ConsumerState) DecodeSafe(b []byte) ([]byte, error) {
 			}
 		case "pending":
 
-			v, err = cbor.Skip(v)
+			var sz uint32
+			sz, v, err = cbor.ReadMapHeaderBytes(v)
 			if err != nil {
 				return b, err
 			}
+			if x.Pending == nil && sz > 0 {
+				x.Pending = make(map[uint64]*Pending, sz)
+			} else if x.Pending != nil {
+				clear(x.Pending)
+			}
+			for iPending := uint32(0); iPending < sz; iPending++ {
+				var key uint64
+				key, v, err = cbor.ReadUint64Bytes(v)
+				if err != nil {
+					return b, err
+				}
+				if len(v) == 0 {
+					return b, cbor.ErrShortBytes
+				}
+				if v[0] == 0xf6 { // null
+					var tmpBytes []byte
+					tmpBytes, err = cbor.ReadNilBytes(v)
+					if err != nil {
+						return b, err
+					}
+					v = tmpBytes
+					x.Pending[key] = nil
+					continue
+				}
+				tmp := new(Pending)
+				v, err = tmp.UnmarshalCBOR(v)
+				if err != nil {
+					return b, err
+				}
+				x.Pending[key] = tmp
+			}
 		case "redelivered":
 
-			v, err = cbor.Skip(v)
+			var sz uint32
+			sz, v, err = cbor.ReadMapHeaderBytes(v)
 			if err != nil {
 				return b, err
+			}
+			if x.Redelivered == nil && sz > 0 {
+				x.Redelivered = make(map[uint64]uint64, sz)
+			} else if x.Redelivered != nil {
+				clear(x.Redelivered)
+			}
+			for iRedelivered := uint32(0); iRedelivered < sz; iRedelivered++ {
+				var key uint64
+				key, v, err = cbor.ReadUint64Bytes(v)
+				if err != nil {
+					return b, err
+				}
+				var val uint64
+				val, v, err = cbor.ReadUint64Bytes(v)
+				if err != nil {
+					return b, err
+				}
+				x.Redelivered[key] = val
 			}
 		default:
 			v, err = cbor.Skip(v)
@@ -2196,6 +2265,9 @@ func (x *WriteableStreamAssignment) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Consumers = make([]*WriteableConsumerAssignment, sz)
 			}
+			if sz > 0 {
+				_ = x.Consumers[sz-1]
+			}
 			for iConsumers := uint32(0); iConsumers < sz; iConsumers++ {
 				if x.Consumers[iConsumers] == nil {
 					x.Consumers[iConsumers] = new(WriteableConsumerAssignment)
@@ -2284,6 +2356,9 @@ func (x *WriteableStreamAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			} else {
 				x.Consumers = make([]*WriteableConsumerAssignment, sz)
 			}
+			if sz > 0 {
+				_ = x.Consumers[sz-1]
+			}
 			for iConsumers := uint32(0); iConsumers < sz; iConsumers++ {
 				if x.Consumers[iConsumers] == nil {
 					x.Consumers[iConsumers] = new(WriteableConsumerAssignment)
@@ -2363,6 +2438,9 @@ func (x *MetaSnapshot) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Streams = make([]WriteableStreamAssignment, sz)
 			}
+			if sz > 0 {
+				_ = x.Streams[sz-1]
+			}
 			for iStreams := uint32(0); iStreams < sz; iStreams++ {
 				var tmp WriteableStreamAssignment
 				v, err = (&tmp).UnmarshalCBOR(v)
@@ -2409,6 +2487,9 @@ func (x *MetaSnapshot) DecodeTrusted(b []byte) ([]byte, error) {
 				x.Streams = x.Streams[:sz]
 			} else {
 				x.Streams = make([]WriteableStreamAssignment, sz)
+			}
+			if sz > 0 {
+				_ = x.Streams[sz-1]
 			}
 			for iStreams := uint32(0); iStreams < sz; iStreams++ {
 				var tmp WriteableStreamAssignment
@@ -2519,6 +2600,9 @@ func (x *StreamConfigSnapshot) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Subjects = make([]string, sz)
 			}
+			if sz > 0 {
+				_ = x.Subjects[sz-1]
+			}
 			for iSubjects := uint32(0); iSubjects < sz; iSubjects++ {
 				var tmp string
 				tmp, v, err = cbor.ReadStringBytes(v)
@@ -2543,9 +2627,7 @@ func (x *StreamConfigSnapshot) DecodeSafe(b []byte) ([]byte, error) {
 			if x.Metadata == nil && sz > 0 {
 				x.Metadata = make(map[string]string, sz)
 			} else if x.Metadata != nil {
-				for k := range x.Metadata {
-					delete(x.Metadata, k)
-				}
+				clear(x.Metadata)
 			}
 			for iMetadata := uint32(0); iMetadata < sz; iMetadata++ {
 				var key string
@@ -2607,6 +2689,9 @@ func (x *StreamConfigSnapshot) DecodeTrusted(b []byte) ([]byte, error) {
 			} else {
 				x.Subjects = make([]string, sz)
 			}
+			if sz > 0 {
+				_ = x.Subjects[sz-1]
+			}
 			for iSubjects := uint32(0); iSubjects < sz; iSubjects++ {
 				var tmp string
 				tmp, v, err = cbor.ReadStringBytes(v)
@@ -2631,9 +2716,7 @@ func (x *StreamConfigSnapshot) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Metadata == nil && sz > 0 {
 				x.Metadata = make(map[string]string, sz)
 			} else if x.Metadata != nil {
-				for k := range x.Metadata {
-					delete(x.Metadata, k)
-				}
+				clear(x.Metadata)
 			}
 			for iMetadata := uint32(0); iMetadata < sz; iMetadata++ {
 				var key string
@@ -2748,9 +2831,7 @@ func (x *ConsumerConfigSnapshot) DecodeSafe(b []byte) ([]byte, error) {
 			if x.Metadata == nil && sz > 0 {
 				x.Metadata = make(map[string]string, sz)
 			} else if x.Metadata != nil {
-				for k := range x.Metadata {
-					delete(x.Metadata, k)
-				}
+				clear(x.Metadata)
 			}
 			for iMetadata := uint32(0); iMetadata < sz; iMetadata++ {
 				var key string
@@ -2818,9 +2899,7 @@ func (x *ConsumerConfigSnapshot) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Metadata == nil && sz > 0 {
 				x.Metadata = make(map[string]string, sz)
 			} else if x.Metadata != nil {
-				for k := range x.Metadata {
-					delete(x.Metadata, k)
-				}
+				clear(x.Metadata)
 			}
 			for iMetadata := uint32(0); iMetadata < sz; iMetadata++ {
 				var key string
