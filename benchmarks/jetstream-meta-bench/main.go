@@ -1,10 +1,7 @@
-//go:build goexperiment.jsonv2
-
 package main
 
 import (
 	"encoding/json"
-	jsonv2 "encoding/json/v2"
 	"flag"
 	"fmt"
 	"os"
@@ -37,11 +34,9 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "Building JetStream meta snapshot fixture (streams=%d, consumers=%d) ...\n", *streams, *consumers)
 	snap := js.BuildMetaSnapshotFixture(*streams, *consumers)
-	view := buildSnapshotView(snap)
 
 	cborBuf, cborErr := snap.MarshalCBOR(nil)
 	jsonBuf, jsonErr := json.Marshal(snap)
-	jsonV2Buf, jsonV2Err := jsonv2.Marshal(view)
 	msgSnap := msgpjs.ToMsgpMetaSnapshot(snap)
 	msgpBuf, msgpErr := msgSnap.MarshalMsg(nil)
 
@@ -106,36 +101,6 @@ func main() {
 				var dst js.MetaSnapshot
 				if err := json.Unmarshal(jsonBuf, &dst); err != nil {
 					b.Fatalf("json.Unmarshal: %v", err)
-				}
-			}
-		},
-	))
-
-	rows = append(rows, runCodecBench("JSON v2 (encoding/json/v2)", len(jsonV2Buf), jsonV2Err,
-		func(b *testing.B) { // encode
-			if jsonV2Err != nil {
-				return
-			}
-			b.SetBytes(int64(len(jsonV2Buf)))
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				if _, err := jsonv2.Marshal(view); err != nil {
-					b.Fatalf("jsonv2.Marshal: %v", err)
-				}
-			}
-		},
-		func(b *testing.B) { // decode
-			if jsonV2Err != nil {
-				return
-			}
-			b.SetBytes(int64(len(jsonV2Buf)))
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				var dst map[string]any
-				if err := jsonv2.Unmarshal(jsonV2Buf, &dst); err != nil {
-					b.Fatalf("jsonv2.Unmarshal: %v", err)
 				}
 			}
 		},
@@ -207,122 +172,6 @@ func runCodecBench(name string, size int, err error, enc, dec func(b *testing.B)
 		res.DecMBPerSec = mbps(size, res.DecNsPerOp)
 	}
 	return res
-}
-
-func buildSnapshotView(snap js.MetaSnapshot) map[string]any {
-	streams := make([]any, 0, len(snap.Streams))
-	for i := range snap.Streams {
-		streams = append(streams, buildStreamView(&snap.Streams[i]))
-	}
-	return map[string]any{"streams": streams}
-}
-
-func buildStreamView(s *js.WriteableStreamAssignment) map[string]any {
-	m := map[string]any{
-		"created": s.Created.Format(time.RFC3339Nano),
-		"stream":  s.ConfigJSON,
-		"sync":    s.Sync,
-	}
-	if s.Client != nil {
-		m["client"] = buildClientView(s.Client)
-	}
-	if s.Group != nil {
-		m["group"] = buildGroupView(s.Group)
-	}
-	if len(s.Consumers) > 0 {
-		cons := make([]any, 0, len(s.Consumers))
-		for _, ca := range s.Consumers {
-			cons = append(cons, buildConsumerView(ca))
-		}
-		m["consumers"] = cons
-	}
-	return m
-}
-
-func buildClientView(ci *js.ClientInfo) map[string]any {
-	m := map[string]any{}
-	if ci.Account != "" {
-		m["acc"] = ci.Account
-	}
-	if ci.Service != "" {
-		m["svc"] = ci.Service
-	}
-	if ci.Cluster != "" {
-		m["cluster"] = ci.Cluster
-	}
-	if ci.RTT != 0 {
-		m["rtt"] = int64(ci.RTT)
-	}
-	return m
-}
-
-func buildGroupView(rg *js.RaftGroup) map[string]any {
-	m := map[string]any{
-		"name":  rg.Name,
-		"peers": append([]string(nil), rg.Peers...),
-		"store": int(rg.Storage),
-	}
-	if rg.Cluster != "" {
-		m["cluster"] = rg.Cluster
-	}
-	if rg.Preferred != "" {
-		m["preferred"] = rg.Preferred
-	}
-	if rg.ScaleUp {
-		m["scale_up"] = rg.ScaleUp
-	}
-	return m
-}
-
-func buildConsumerView(ca *js.WriteableConsumerAssignment) map[string]any {
-	m := map[string]any{
-		"created":  ca.Created.Format(time.RFC3339Nano),
-		"name":     ca.Name,
-		"stream":   ca.Stream,
-		"consumer": ca.ConfigJSON,
-	}
-	if ca.Client != nil {
-		m["client"] = buildClientView(ca.Client)
-	}
-	if ca.Group != nil {
-		m["group"] = buildGroupView(ca.Group)
-	}
-	if ca.State != nil {
-		m["state"] = buildConsumerStateView(ca.State)
-	}
-	return m
-}
-
-func buildConsumerStateView(cs *js.ConsumerState) map[string]any {
-	m := map[string]any{
-		"delivered": buildSequencePairView(cs.Delivered),
-		"ack_floor": buildSequencePairView(cs.AckFloor),
-	}
-	if len(cs.Pending) > 0 {
-		pm := make(map[string]any, len(cs.Pending))
-		for k, v := range cs.Pending {
-			pm[fmt.Sprintf("%d", k)] = map[string]any{
-				"sequence": v.Sequence,
-				"ts":       v.Timestamp,
-			}
-		}
-		m["pending"] = pm
-	}
-	if len(cs.Redelivered) > 0 {
-		rm := make(map[string]any, len(cs.Redelivered))
-		for k, v := range cs.Redelivered {
-			rm[fmt.Sprintf("%d", k)] = v
-		}
-		m["redelivered"] = rm
-	}
-	return m
-}
-
-func buildSequencePairView(sp js.SequencePair) map[string]any {
-	return map[string]any{
-		"consumer_seq": sp.Consumer,
-		"stream_seq":   sp.Stream,
-	}
 }
 
 func printTable(rows []benchResult, streams, consumers int) {
