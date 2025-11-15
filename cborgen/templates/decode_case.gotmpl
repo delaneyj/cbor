@@ -1,0 +1,164 @@
+{{/*
+Decode case snippets for UnmarshalCBOR switch bodies.
+
+Templates:
+  decodeCaseBasic       - scalar types (string, bool, numbers)
+  decodeCaseBytes       - []byte
+  decodeCaseSliceBasic  - []T for basic scalar T
+  decodeCaseMapStrBasic - map[string]T for basic scalar T
+  decodeCaseSkip        - fallback: skip unknown/unsupported field
+
+Inputs:
+  .Field    - Go field name on receiver (exported)
+  .VarType  - Go type for temporary (e.g. "int64")
+  .ReadFunc - runtime ReadXxxBytes function to call
+*/}}
+
+{{define "decodeCaseBasic"}}
+		var tmp {{.VarType}}
+		tmp, v, err = cbor.{{.ReadFunc}}(v)
+		if err != nil { return b, err }
+		x.{{.Field}} = tmp
+{{end}}
+
+{{define "decodeCaseBytes"}}
+		var tmp []byte
+		tmp, v, err = cbor.ReadBytesBytes(v, nil)
+		if err != nil { return b, err }
+		x.{{.Field}} = tmp
+{{end}}
+
+{{define "decodeCaseSliceBasic"}}
+		var sz uint32
+		sz, v, err = cbor.ReadArrayHeaderBytes(v)
+		if err != nil { return b, err }
+		if cap(x.{{.Field}}) >= int(sz) {
+			x.{{.Field}} = x.{{.Field}}[:sz]
+		} else {
+			x.{{.Field}} = make([]{{.VarType}}, sz)
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			var tmp {{.VarType}}
+			tmp, v, err = cbor.{{.ReadFunc}}(v)
+			if err != nil { return b, err }
+			x.{{.Field}}[i{{.Field}}] = tmp
+		}
+{{end}}
+
+{{define "decodeCaseMapStrBasic"}}
+		var sz uint32
+		sz, v, err = cbor.ReadMapHeaderBytes(v)
+		if err != nil { return b, err }
+		if x.{{.Field}} == nil && sz > 0 {
+			x.{{.Field}} = make(map[string]{{.VarType}}, sz)
+		} else if x.{{.Field}} != nil {
+			for k := range x.{{.Field}} {
+				delete(x.{{.Field}}, k)
+			}
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			var key string
+			key, v, err = cbor.ReadStringBytes(v)
+			if err != nil { return b, err }
+			var tmp {{.VarType}}
+			tmp, v, err = cbor.{{.ReadFunc}}(v)
+			if err != nil { return b, err }
+			x.{{.Field}}[key] = tmp
+		}
+{{end}}
+
+{{define "decodeCaseSliceStruct"}}
+		var sz uint32
+		sz, v, err = cbor.ReadArrayHeaderBytes(v)
+		if err != nil { return b, err }
+		if cap(x.{{.Field}}) >= int(sz) {
+			x.{{.Field}} = x.{{.Field}}[:sz]
+		} else {
+			x.{{.Field}} = make([]{{.VarType}}, sz)
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			var tmp {{.VarType}}
+			v, err = (&tmp).UnmarshalCBOR(v)
+			if err != nil { return b, err }
+			x.{{.Field}}[i{{.Field}}] = tmp
+		}
+{{end}}
+
+{{define "decodeCaseSlicePtrStruct"}}
+		var sz uint32
+		sz, v, err = cbor.ReadArrayHeaderBytes(v)
+		if err != nil { return b, err }
+		if cap(x.{{.Field}}) >= int(sz) {
+			x.{{.Field}} = x.{{.Field}}[:sz]
+		} else {
+			x.{{.Field}} = make([]*{{.VarType}}, sz)
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			if x.{{.Field}}[i{{.Field}}] == nil { x.{{.Field}}[i{{.Field}}] = new({{.VarType}}) }
+			v, err = x.{{.Field}}[i{{.Field}}].UnmarshalCBOR(v)
+			if err != nil { return b, err }
+		}
+{{end}}
+
+{{define "decodeCaseMapStrStruct"}}
+		var sz uint32
+		sz, v, err = cbor.ReadMapHeaderBytes(v)
+		if err != nil { return b, err }
+		if x.{{.Field}} == nil && sz > 0 {
+			x.{{.Field}} = make(map[string]{{.VarType}}, sz)
+		} else if x.{{.Field}} != nil {
+			for k := range x.{{.Field}} { delete(x.{{.Field}}, k) }
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			var key string
+			key, v, err = cbor.ReadStringBytes(v)
+			if err != nil { return b, err }
+			var tmp {{.VarType}}
+			v, err = (&tmp).UnmarshalCBOR(v)
+			if err != nil { return b, err }
+			x.{{.Field}}[key] = tmp
+		}
+{{end}}
+
+{{define "decodeCaseMapStrPtrStruct"}}
+		var sz uint32
+		sz, v, err = cbor.ReadMapHeaderBytes(v)
+		if err != nil { return b, err }
+		if x.{{.Field}} == nil && sz > 0 {
+			x.{{.Field}} = make(map[string]*{{.VarType}}, sz)
+		} else if x.{{.Field}} != nil {
+			for k := range x.{{.Field}} { delete(x.{{.Field}}, k) }
+		}
+		for i{{.Field}} := uint32(0); i{{.Field}} < sz; i{{.Field}}++ {
+			var key string
+			key, v, err = cbor.ReadStringBytes(v)
+			if err != nil { return b, err }
+			tmp := new({{.VarType}})
+			v, err = tmp.UnmarshalCBOR(v)
+			if err != nil { return b, err }
+			x.{{.Field}}[key] = tmp
+		}
+{{end}}
+
+{{define "decodeCaseUnmarshalField"}}
+		v, err = x.{{.Field}}.UnmarshalCBOR(v)
+		if err != nil { return b, err }
+{{end}}
+
+{{define "decodeCasePtrUnmarshalField"}}
+		if x.{{.Field}} == nil { x.{{.Field}} = new({{.VarType}}) }
+		v, err = x.{{.Field}}.UnmarshalCBOR(v)
+		if err != nil { return b, err }
+{{end}}
+
+{{define "decodeCaseSkip"}}
+		v, err = cbor.Skip(v)
+		if err != nil { return b, err }
+{{end}}
+
+{{define "decodeCaseStringTrusted"}}
+		var tmpBytes []byte
+		tmpBytes, v, err = cbor.ReadStringZC(v)
+		if err != nil { return b, err }
+		x.{{.Field}} = cbor.UnsafeString(tmpBytes)
+{{end}}

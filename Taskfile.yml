@@ -1,0 +1,41 @@
+version: '3'
+
+vars:
+  VECTORS_DIR: tests/community-test-vectors
+
+tasks:
+  fetch-vectors:
+    desc: Clone or update community CBOR test-vectors into testdata
+    sources:
+      - tests/community-test-vectors/appendix_a.json
+    generates:
+      - tests/community-test-vectors/appendix_a.json
+    cmds:
+      - |
+        if [ -d "{{.VECTORS_DIR}}/.git" ]; then
+          echo "Updating existing test-vectors in {{.VECTORS_DIR}}";
+          git -C "{{.VECTORS_DIR}}" pull --ff-only;
+        else
+          echo "Cloning cbor/test-vectors into {{.VECTORS_DIR}}";
+          git clone https://github.com/cbor/test-vectors "{{.VECTORS_DIR}}";
+        fi
+
+  test:
+    desc: Run all tests in root and cborgen modules
+    deps:
+      - fetch-vectors
+    cmds:
+      - go test ./...
+
+  fuzz:
+    desc: Run Go fuzz tests across runtime, JSON interop, and structs packages
+    deps:
+      - fetch-vectors
+    vars:
+      FUZZ_TIME: 5s
+    cmds:
+      - go test ./tests/runtime-compliance -run=^$ -fuzz=FuzzRuntimeReaderBasic -fuzztime={{.FUZZ_TIME}}
+      - go test ./tests/structs -run=^$ -fuzz=FuzzDecodeSafeTrusted -fuzztime={{.FUZZ_TIME}}
+      - go test ./tests/community-test-vectors -run=^$ -fuzz=FuzzCommunityVectors -fuzztime={{.FUZZ_TIME}}
+      - go test ./tests/runtime-sequences -run=^$ -fuzz=FuzzCBORSequences -fuzztime={{.FUZZ_TIME}}
+      - go test ./tests/json-interop -run=^$ -fuzz=FuzzJSONInterop -fuzztime={{.FUZZ_TIME}}
