@@ -9,16 +9,21 @@ import (
 	"text/tabwriter"
 	"time"
 
+	jsonv2 "github.com/go-json-experiment/json"
 	"github.com/delaneyj/cbor/tests/jetstreammeta"
 )
 
 type benchResult struct {
 	Name          string
 	Size          int
-	NsPerOp       float64
-	MBPerSec      float64
-	AllocsPerOp   float64
-	MemBytesPerOp float64
+	EncNsPerOp       float64
+	EncMBPerSec      float64
+	EncAllocsPerOp   float64
+	EncMemBytesPerOp float64
+	DecNsPerOp       float64
+	DecMBPerSec      float64
+	DecAllocsPerOp   float64
+	DecMemBytesPerOp float64
 	Err           error
 }
 
@@ -29,17 +34,153 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "Building JetStream meta snapshot fixture (streams=%d, consumers=%d) ...\n", *streams, *consumers)
 	snap := jetstreammeta.BuildMetaSnapshotFixture(*streams, *consumers)
+	view := buildSnapshotView(snap)
 
-	// Warm up encodings once to determine output sizes and surface any
-	// obvious issues before running timed benchmarks.
 	cborBuf, cborErr := snap.MarshalCBOR(nil)
 	jsonBuf, jsonErr := json.Marshal(snap)
+	jsonV2Buf, jsonV2Err := jsonv2.Marshal(view)
 	msgSnap := jetstreammeta.ToMsgpMetaSnapshot(snap)
 	msgpBuf, msgpErr := msgSnap.MarshalMsg(nil)
 
-	rows := make([]benchResult, 0, 3)
+	rows := make([]benchResult, 0, 4)
 
-	// Helper to compute MB/s from size and ns/op.
+	rows = append(rows, runCodecBench("CBOR (cbor/runtime)", len(cborBuf), cborErr,
+		func(b *testing.B) { // encode
+			if cborErr != nil {
+				return
+			}
+			buf := make([]byte, 0, len(cborBuf))
+			b.SetBytes(int64(len(cborBuf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var err error
+				buf, err = snap.MarshalCBOR(buf[:0])
+				if err != nil {
+					b.Fatalf("MarshalCBOR: %v", err)
+				}
+			}
+		},
+		func(b *testing.B) { // decode
+			if cborErr != nil {
+				return
+			}
+			b.SetBytes(int64(len(cborBuf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var dst jetstreammeta.MetaSnapshot
+				rest, err := dst.DecodeTrusted(cborBuf)
+				if err != nil || len(rest) != 0 {
+					b.Fatalf("DecodeTrusted: %v (rest=%d)", err, len(rest))
+				}
+			}
+		},
+	))
+
+	rows = append(rows, runCodecBench("JSON (encoding/json)", len(jsonBuf), jsonErr,
+		func(b *testing.B) { // encode
+			if jsonErr != nil {
+				return
+			}
+			b.SetBytes(int64(len(jsonBuf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := json.Marshal(snap); err != nil {
+					b.Fatalf("json.Marshal: %v", err)
+				}
+			}
+		},
+		func(b *testing.B) { // decode
+			if jsonErr != nil {
+				return
+			}
+			b.SetBytes(int64(len(jsonBuf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var dst jetstreammeta.MetaSnapshot
+				if err := json.Unmarshal(jsonBuf, &dst); err != nil {
+					b.Fatalf("json.Unmarshal: %v", err)
+				}
+			}
+		},
+	))
+
+	rows = append(rows, runCodecBench("JSON v2 (json-experiment)", len(jsonV2Buf), jsonV2Err,
+		func(b *testing.B) { // encode
+			if jsonV2Err != nil {
+				return
+			}
+			b.SetBytes(int64(len(jsonV2Buf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := jsonv2.Marshal(view); err != nil {
+					b.Fatalf("jsonv2.Marshal: %v", err)
+				}
+			}
+		},
+		func(b *testing.B) { // decode
+			if jsonV2Err != nil {
+				return
+			}
+			b.SetBytes(int64(len(jsonV2Buf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var dst map[string]any
+				if err := jsonv2.Unmarshal(jsonV2Buf, &dst); err != nil {
+					b.Fatalf("jsonv2.Unmarshal: %v", err)
+				}
+			}
+		},
+	))
+
+	rows = append(rows, runCodecBench("MSGP (generated MarshalMsg)", len(msgpBuf), msgpErr,
+		func(b *testing.B) { // encode
+			if msgpErr != nil {
+				return
+			}
+			buf := make([]byte, 0, len(msgpBuf))
+			b.SetBytes(int64(len(msgpBuf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var err error
+				buf, err = msgSnap.MarshalMsg(buf[:0])
+				if err != nil {
+					b.Fatalf("MarshalMsg: %v", err)
+				}
+			}
+		},
+		func(b *testing.B) { // decode
+			if msgpErr != nil {
+				return
+			}
+			b.SetBytes(int64(len(msgpBuf)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				var dst jetstreammeta.MsgpMetaSnapshot
+				rest, err := dst.UnmarshalMsg(msgpBuf)
+				if err != nil || len(rest) != 0 {
+					b.Fatalf("UnmarshalMsg: %v (rest=%d)", err, len(rest))
+				}
+			}
+		},
+	))
+
+	printTable(rows, *streams, *consumers)
+}
+
+func runCodecBench(name string, size int, err error, enc, dec func(b *testing.B)) benchResult {
+	res := benchResult{Name: name, Size: size, Err: err}
+	if err != nil || size == 0 {
+		return res
+	}
+
 	mbps := func(size int, nsPerOp float64) float64 {
 		if nsPerOp <= 0 {
 			return 0
@@ -48,106 +189,35 @@ func main() {
 		return bytesPerSec / (1024 * 1024)
 	}
 
-	// CBOR (this library, using generated MetaSnapshot.MarshalCBOR).
-	rows = append(rows, runCodecBench("CBOR (cbor/runtime)", len(cborBuf), cborErr, func(b *testing.B) {
-		if cborErr != nil {
-			return
-		}
-		buf := make([]byte, 0, len(cborBuf))
-		b.SetBytes(int64(len(cborBuf)))
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var err error
-			buf, err = snap.MarshalCBOR(buf[:0])
-			if err != nil {
-				b.Fatalf("MarshalCBOR: %v", err)
-			}
-		}
-	}))
-
-	// JSON baseline using encoding/json on the same MetaSnapshot
-	// struct that cborgen and msgp target.
-	rows = append(rows, runCodecBench("JSON (encoding/json)", len(jsonBuf), jsonErr, func(b *testing.B) {
-		if jsonErr != nil {
-			return
-		}
-		b.SetBytes(int64(len(jsonBuf)))
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			if _, err := json.Marshal(snap); err != nil {
-				b.Fatalf("json.Marshal: %v", err)
-			}
-		}
-	}))
-
-		// MessagePack baseline using tinylib/msgp's generated MarshalMsg
-		// for a MsgpMetaSnapshot converted from the same MetaSnapshot
-		// used by CBOR and JSON.
-		rows = append(rows, runCodecBench("MSGP (generated MarshalMsg)", len(msgpBuf), msgpErr, func(b *testing.B) {
-		if msgpErr != nil {
-			return
-		}
-		buf := make([]byte, 0, len(msgpBuf))
-		b.SetBytes(int64(len(msgpBuf)))
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var err error
-			buf, err = msgSnap.MarshalMsg(buf[:0])
-			if err != nil {
-				b.Fatalf("MarshalMsg: %v", err)
-			}
-		}
-	}))
-
-	// Post-process rows to compute human-friendly metrics.
-	for i := range rows {
-		if rows[i].Err != nil || rows[i].Size == 0 || rows[i].NsPerOp <= 0 {
-			continue
-		}
-		rows[i].MBPerSec = mbps(rows[i].Size, rows[i].NsPerOp)
+	if enc != nil {
+		br := testing.Benchmark(enc)
+		res.EncNsPerOp = float64(br.NsPerOp())
+		res.EncAllocsPerOp = float64(br.AllocsPerOp())
+		res.EncMemBytesPerOp = float64(br.MemBytes) / float64(br.N)
+		res.EncMBPerSec = mbps(size, res.EncNsPerOp)
 	}
-
-	printTable(rows, *streams, *consumers)
-}
-
-// runCodecBench runs a single benchmark function (if err is nil) and
-// returns a populated benchResult. If err is non-nil, the benchmark
-// is skipped and the error recorded.
-func runCodecBench(name string, size int, err error, fn func(b *testing.B)) benchResult {
-	res := benchResult{Name: name, Size: size, Err: err}
-	if err != nil || size == 0 {
-		return res
+	if dec != nil {
+		br := testing.Benchmark(dec)
+		res.DecNsPerOp = float64(br.NsPerOp())
+		res.DecAllocsPerOp = float64(br.AllocsPerOp())
+		res.DecMemBytesPerOp = float64(br.MemBytes) / float64(br.N)
+		res.DecMBPerSec = mbps(size, res.DecNsPerOp)
 	}
-	br := testing.Benchmark(fn)
-	// testing.Benchmark guarantees br.N > 0 when it returns.
-	res.NsPerOp = float64(br.NsPerOp())
-	res.AllocsPerOp = float64(br.AllocsPerOp())
-	res.MemBytesPerOp = float64(br.MemBytes) / float64(br.N)
 	return res
 }
 
-// buildSnapshotView constructs a JSON/msgp-friendly view of the
-// MetaSnapshot using only primitive types, maps, and slices. It
-// mirrors the shape of the NATS meta snapshot JSON but normalizes
-// time and duration fields into strings/integers so that both
-// json/v2 and msgp.AppendIntf can serialize them.
 func buildSnapshotView(snap jetstreammeta.MetaSnapshot) map[string]any {
 	streams := make([]any, 0, len(snap.Streams))
 	for i := range snap.Streams {
 		streams = append(streams, buildStreamView(&snap.Streams[i]))
 	}
-	return map[string]any{
-		"streams": streams,
-	}
+	return map[string]any{"streams": streams}
 }
 
 func buildStreamView(s *jetstreammeta.WriteableStreamAssignment) map[string]any {
 	m := map[string]any{
 		"created": s.Created.Format(time.RFC3339Nano),
-		"stream":  s.ConfigJSON, // raw JSON bytes
+		"stream":  s.ConfigJSON,
 		"sync":    s.Sync,
 	}
 	if s.Client != nil {
@@ -177,7 +247,6 @@ func buildClientView(ci *jetstreammeta.ClientInfo) map[string]any {
 	if ci.Cluster != "" {
 		m["cluster"] = ci.Cluster
 	}
-	// RTT is a time.Duration; encode as nanoseconds for portability.
 	if ci.RTT != 0 {
 		m["rtt"] = int64(ci.RTT)
 	}
@@ -204,9 +273,9 @@ func buildGroupView(rg *jetstreammeta.RaftGroup) map[string]any {
 
 func buildConsumerView(ca *jetstreammeta.WriteableConsumerAssignment) map[string]any {
 	m := map[string]any{
-		"created": ca.Created.Format(time.RFC3339Nano),
-		"name":    ca.Name,
-		"stream":  ca.Stream,
+		"created":  ca.Created.Format(time.RFC3339Nano),
+		"name":     ca.Name,
+		"stream":   ca.Stream,
 		"consumer": ca.ConfigJSON,
 	}
 	if ca.Client != nil {
@@ -226,20 +295,20 @@ func buildConsumerStateView(cs *jetstreammeta.ConsumerState) map[string]any {
 		"delivered": buildSequencePairView(cs.Delivered),
 		"ack_floor": buildSequencePairView(cs.AckFloor),
 	}
-		if len(cs.Pending) > 0 {
-			pm := make(map[string]any, len(cs.Pending))
-			for k, v := range cs.Pending {
-				pm[fmt.Sprintf("%d", k)] = map[string]any{
+	if len(cs.Pending) > 0 {
+		pm := make(map[string]any, len(cs.Pending))
+		for k, v := range cs.Pending {
+			pm[fmt.Sprintf("%d", k)] = map[string]any{
 				"sequence": v.Sequence,
 				"ts":       v.Timestamp,
 			}
 		}
 		m["pending"] = pm
 	}
-		if len(cs.Redelivered) > 0 {
-			rm := make(map[string]any, len(cs.Redelivered))
-			for k, v := range cs.Redelivered {
-				rm[fmt.Sprintf("%d", k)] = v
+	if len(cs.Redelivered) > 0 {
+		rm := make(map[string]any, len(cs.Redelivered))
+		for k, v := range cs.Redelivered {
+			rm[fmt.Sprintf("%d", k)] = v
 		}
 		m["redelivered"] = rm
 	}
@@ -257,26 +326,36 @@ func printTable(rows []benchResult, streams, consumers int) {
 	tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintf(tw, "# JetStream Meta Snapshot Encode Benchmarks (streams=%d, consumers=%d)\n", streams, consumers)
 	fmt.Fprintf(tw, "# Timestamp: %s\n\n", time.Now().Format(time.RFC3339))
-	fmt.Fprintln(tw, "Codec\tBytes/op\tMB/s\tns/op\tAllocs/op\tMem/op (B)\tError")
-
+	fmt.Fprintln(tw, "Codec\tBytes/op\tEnc MB/s\tEnc ns/op\tEnc Allocs/op\tEnc Mem/op (B)\tError")
 	for _, r := range rows {
 		if r.Err != nil {
 			fmt.Fprintf(tw, "%s\t%d\t-\t-\t-\t-\t%v\n", r.Name, r.Size, r.Err)
 			continue
 		}
-		if r.Size == 0 || r.NsPerOp <= 0 {
+		if r.Size == 0 || r.EncNsPerOp <= 0 {
 			fmt.Fprintf(tw, "%s\t%d\t-\t-\t-\t-\t(no data)\n", r.Name, r.Size)
 			continue
 		}
-		fmt.Fprintf(tw, "%s\t%d\t%.2f\t%.0f\t%.2f\t%.0f\t-\n",
-			r.Name,
-			r.Size,
-			r.MBPerSec,
-			r.NsPerOp,
-			r.AllocsPerOp,
-			r.MemBytesPerOp,
-		)
+		fmt.Fprintf(tw, "%s\t%d\t%.2f\t%.0f\t%.2f\t%.0f\t-\n", r.Name, r.Size, r.EncMBPerSec, r.EncNsPerOp, r.EncAllocsPerOp, r.EncMemBytesPerOp)
 	}
+	_ = tw.Flush()
 
+	fmt.Println()
+
+	tw = tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintf(tw, "# JetStream Meta Snapshot Decode Benchmarks (streams=%d, consumers=%d)\n", streams, consumers)
+	fmt.Fprintf(tw, "# Timestamp: %s\n\n", time.Now().Format(time.RFC3339))
+	fmt.Fprintln(tw, "Codec\tBytes/op\tDec MB/s\tDec ns/op\tDec Allocs/op\tDec Mem/op (B)\tError")
+	for _, r := range rows {
+		if r.Err != nil {
+			fmt.Fprintf(tw, "%s\t%d\t-\t-\t-\t-\t%v\n", r.Name, r.Size, r.Err)
+			continue
+		}
+		if r.Size == 0 || r.DecNsPerOp <= 0 {
+			fmt.Fprintf(tw, "%s\t%d\t-\t-\t-\t-\t(no data)\n", r.Name, r.Size)
+			continue
+		}
+		fmt.Fprintf(tw, "%s\t%d\t%.2f\t%.0f\t%.2f\t%.0f\t-\n", r.Name, r.Size, r.DecMBPerSec, r.DecNsPerOp, r.DecAllocsPerOp, r.DecMemBytesPerOp)
+	}
 	_ = tw.Flush()
 }

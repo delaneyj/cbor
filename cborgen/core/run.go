@@ -20,6 +20,12 @@ import (
 	tmplfs "github.com/delaneyj/cbor/cborgen/templates"
 )
 
+// generatedStructs tracks struct types for which cborgen is generating
+// MarshalCBOR/Decode* methods in the current run. It is used to decide
+// when DecodeTrusted can be used for nested fields instead of falling
+// back to the generic UnmarshalCBOR path.
+var generatedStructs = map[string]struct{}{}
+
 // Options configures how generation runs.
 // Additional switches can be added over time.
 type Options struct {
@@ -165,6 +171,7 @@ type fieldSpec struct {
 	DecodeCaseTrust string
 	EncodeCase      string
 	EncodeExpr      string
+	EncodeBlock     string
 	Ignore    bool
 }
 
@@ -172,6 +179,7 @@ type structSpec struct {
 	Name        string
 	Fields      []fieldSpec
 	MsgSizeExpr string
+	HasOmit     bool
 }
 
 // generateStructCode finds struct types in the given file and generates
@@ -219,6 +227,7 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 					if z, ok := zeroCheckExpr(name, field.Type); ok {
 						fs.ZeroCheck = z
 						useOmit = true
+						ss.HasOmit = true
 					} else {
 						fs.OmitEmpty = false
 					}
@@ -231,6 +240,7 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 						fs.EncodeCase = ec
 					}
 					fs.EncodeExpr = encodeExprForField(fs.GoName, field.Type)
+					fs.EncodeBlock = encodeBlockForField(ss.Name, fs.GoName, fs.CBORName, field.Type)
 				if dc, ok := decodeCaseExprSafe(ss.Name, fs.GoName, field.Type); ok {
 					fs.DecodeCaseSafe = dc
 				} else {
@@ -251,7 +261,8 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 				}
 				ss.Fields = append(ss.Fields, fs)
 			}
-			if len(ss.Fields) > 0 {
+				if len(ss.Fields) > 0 {
+					generatedStructs[ss.Name] = struct{}{}
 				if len(sizeExprParts) > 0 {
 					// Map header plus per-field key/value contributions.
 					ss.MsgSizeExpr = "cbor.MapHeaderSize" + " + " + strings.Join(sizeExprParts, " + ")
@@ -372,6 +383,18 @@ type decodeCaseTemplateData struct {
 }
 
 var decodeCaseTemplate = template.Must(template.New("decode_case").ParseFS(tmplfs.FS, "decode_case.gotmpl"))
+
+type encodeBlockTemplateData struct {
+	StructName string
+	GoField    string
+	CBORName   string
+	FieldRef   string
+	KeyName    string
+	ElemVar    string
+	AppendFunc string
+}
+
+var encodeBlockTemplate = template.Must(template.New("encode_block").ParseFS(tmplfs.FS, "encode_block.gotmpl"))
 
 // fieldSizeExpr builds a worst-case size expression for a single field
 // with the given CBOR name and Go field name. The returned expression
@@ -524,6 +547,161 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 		return "", false
 	}
 	return key + " + " + val, true
+}
+
+// encodeBlockForField builds a multi-statement encode block for
+// selected map and slice shapes that are hot in JetStream meta
+// snapshot structs. It returns an empty string when no special
+// handling is required. The block is written in terms of receiver 'x'
+// and appends to the buffer 'b', following the MarshalCBOR template
+// style.
+func encodeBlockForField(structName, goName, cborName string, typ ast.Expr) string {
+	data := encodeBlockTemplateData{
+		StructName: structName,
+		GoField:    goName,
+		CBORName:   cborName,
+		FieldRef:   "x." + goName,
+		KeyName:    cborName,
+	}
+
+	tmplName := ""
+
+	switch t := typ.(type) {
+	case *ast.MapType:
+		keyIdent, okKey := t.Key.(*ast.Ident)
+		if !okKey {
+			return ""
+		}
+
+		// map[uint64]*T where *T has MarshalCBOR (assumed for exported T).
+		if keyIdent.Name == "uint64" {
+			if starVal, ok := t.Value.(*ast.StarExpr); ok {
+				if ident, ok := starVal.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
+					tmplName = "encodeMapUint64PtrMarshaler"
+				}
+			} else if valIdent, ok := t.Value.(*ast.Ident); ok && valIdent.Name == "uint64" {
+				// map[uint64]uint64
+				tmplName = "encodeMapUint64Uint64"
+			}
+		}
+
+		// map[string]T shapes.
+		if tmplName == "" && keyIdent.Name == "string" {
+			// map[string]S for scalar S, map[string]string, and map[string]T where T has MarshalCBOR.
+			if valIdent, ok := t.Value.(*ast.Ident); ok {
+				switch valIdent.Name {
+				case "string":
+					// Dedicated helper for map[string]string.
+					tmplName = "encodeMapStrStr"
+				case "bool":
+					data.AppendFunc = "AppendBool"
+				case "int":
+					data.AppendFunc = "AppendInt"
+				case "int8":
+					data.AppendFunc = "AppendInt8"
+				case "int16":
+					data.AppendFunc = "AppendInt16"
+				case "int32", "rune":
+					data.AppendFunc = "AppendInt32"
+				case "int64":
+					data.AppendFunc = "AppendInt64"
+				case "uint":
+					data.AppendFunc = "AppendUint"
+				case "uint8", "byte":
+					data.AppendFunc = "AppendUint8"
+				case "uint16":
+					data.AppendFunc = "AppendUint16"
+				case "uint32":
+					data.AppendFunc = "AppendUint32"
+				case "uint64":
+					data.AppendFunc = "AppendUint64"
+				case "float32":
+					data.AppendFunc = "AppendFloat32"
+				case "float64":
+					data.AppendFunc = "AppendFloat64"
+				}
+				if data.AppendFunc != "" && tmplName == "" {
+					tmplName = "encodeMapStrScalar"
+				} else if tmplName == "" && ast.IsExported(valIdent.Name) {
+					// map[string]T where T has MarshalCBOR
+					tmplName = "encodeMapStrValueMarshaler"
+				}
+			} else if starVal, ok := t.Value.(*ast.StarExpr); ok {
+				// map[string]*T where *T has MarshalCBOR
+				if ident, ok := starVal.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
+					tmplName = "encodeMapStrPtrMarshaler"
+				}
+			}
+		}
+
+	case *ast.ArrayType:
+		if t.Len != nil {
+			return ""
+		}
+
+		// Scalar slices: []bool, []int*, []uint*, []float*, []string.
+		if ident, ok := t.Elt.(*ast.Ident); ok {
+			// []byte is encoded as a CBOR byte string, not an array.
+			if ident.Name == "byte" {
+				break
+			}
+			switch ident.Name {
+			case "string":
+				data.AppendFunc = "AppendString"
+			case "bool":
+				data.AppendFunc = "AppendBool"
+			case "int":
+				data.AppendFunc = "AppendInt"
+			case "int8":
+				data.AppendFunc = "AppendInt8"
+			case "int16":
+				data.AppendFunc = "AppendInt16"
+			case "int32", "rune":
+				data.AppendFunc = "AppendInt32"
+			case "int64":
+				data.AppendFunc = "AppendInt64"
+			case "uint":
+				data.AppendFunc = "AppendUint"
+			case "uint8", "byte":
+				data.AppendFunc = "AppendUint8"
+			case "uint16":
+				data.AppendFunc = "AppendUint16"
+			case "uint32":
+				data.AppendFunc = "AppendUint32"
+			case "uint64":
+				data.AppendFunc = "AppendUint64"
+			case "float32":
+				data.AppendFunc = "AppendFloat32"
+			case "float64":
+				data.AppendFunc = "AppendFloat64"
+			}
+			if data.AppendFunc != "" {
+				tmplName = "encodeSliceScalar"
+				break
+			}
+		}
+
+		// []*T where *T has MarshalCBOR (assumed for exported T).
+		if star, ok := t.Elt.(*ast.StarExpr); ok {
+			if ident, ok := star.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
+				data.ElemVar = strings.ToLower(string(ident.Name[0]))
+				tmplName = "encodeSlicePtrMarshaler"
+			}
+		} else if ident, ok := t.Elt.(*ast.Ident); ok && ast.IsExported(ident.Name) {
+			// []T where T has MarshalCBOR.
+			tmplName = "encodeSliceValueMarshaler"
+		}
+	}
+
+	if tmplName == "" {
+		return ""
+	}
+
+	var buf bytes.Buffer
+	if err := encodeBlockTemplate.ExecuteTemplate(&buf, tmplName, data); err != nil {
+		return ""
+	}
+	return strings.TrimRight(buf.String(), "\n")
 }
 
 // encodeCaseExpr builds the body of an EncodeMsg field write for the
@@ -890,6 +1068,102 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 	tmplName := ""
 
 	switch t := typ.(type) {
+	case *ast.MapType:
+		keyIdent, okKey := t.Key.(*ast.Ident)
+		if !okKey {
+			return "", false
+		}
+
+		// map[uint64]*T and map[uint64]uint64 fast paths for Trusted
+		if keyIdent.Name == "uint64" {
+			if starVal, ok := t.Value.(*ast.StarExpr); ok {
+				if ident, ok2 := starVal.X.(*ast.Ident); ok2 {
+					data.VarType = ident.Name
+					tmplName = "decodeCaseMapUint64PtrTrusted"
+				}
+			} else if valIdent, ok := t.Value.(*ast.Ident); ok && valIdent.Name == "uint64" {
+				tmplName = "decodeCaseMapUint64Uint64Trusted"
+			}
+			if tmplName == "" {
+				return "", false
+			}
+			break
+		}
+
+			// map[string]T containers for scalar or struct T (Trusted path)
+			if keyIdent.Name != "string" {
+				return "", false
+			}
+			if valIdent, okVal := t.Value.(*ast.Ident); okVal {
+				switch valIdent.Name {
+			case "string":
+				data.VarType = "string"
+				data.ReadFunc = "ReadStringBytes"
+			case "bool":
+				data.VarType = "bool"
+				data.ReadFunc = "ReadBoolBytes"
+			case "int":
+				data.VarType = "int"
+				data.ReadFunc = "ReadIntBytes"
+			case "int64":
+				data.VarType = "int64"
+				data.ReadFunc = "ReadInt64Bytes"
+			case "int32", "rune":
+				data.VarType = "int32"
+				data.ReadFunc = "ReadInt32Bytes"
+			case "int16":
+				data.VarType = "int16"
+				data.ReadFunc = "ReadInt16Bytes"
+			case "int8":
+				data.VarType = "int8"
+				data.ReadFunc = "ReadInt8Bytes"
+			case "uint":
+				data.VarType = "uint"
+				data.ReadFunc = "ReadUintBytes"
+			case "uint64":
+				data.VarType = "uint64"
+				data.ReadFunc = "ReadUint64Bytes"
+			case "uint32":
+				data.VarType = "uint32"
+				data.ReadFunc = "ReadUint32Bytes"
+			case "uint16":
+				data.VarType = "uint16"
+				data.ReadFunc = "ReadUint16Bytes"
+			case "uint8", "byte":
+				data.VarType = "uint8"
+				data.ReadFunc = "ReadUint8Bytes"
+			case "float32":
+				data.VarType = "float32"
+				data.ReadFunc = "ReadFloat32Bytes"
+				case "float64":
+					data.VarType = "float64"
+					data.ReadFunc = "ReadFloat64Bytes"
+				default:
+					data.VarType = valIdent.Name
+					if _, ok := generatedStructs[valIdent.Name]; ok {
+						tmplName = "decodeCaseMapStrStructTrusted"
+					} else {
+						tmplName = "decodeCaseMapStrStruct"
+					}
+				}
+				if tmplName == "" {
+					tmplName = "decodeCaseMapStrBasic"
+				}
+			break
+		}
+			if star, okVal := t.Value.(*ast.StarExpr); okVal {
+				if ident, ok2 := star.X.(*ast.Ident); ok2 {
+					data.VarType = ident.Name
+					if _, ok := generatedStructs[ident.Name]; ok {
+						tmplName = "decodeCaseMapStrPtrStructTrusted"
+					} else if tmplName == "" {
+						tmplName = "decodeCaseMapStrPtrStruct"
+					}
+					break
+				}
+			}
+		return "", false
+
 	case *ast.Ident:
 		switch t.Name {
 		case "string":
@@ -935,9 +1209,13 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 			data.VarType = "float64"
 			data.ReadFunc = "ReadFloat64Bytes"
 		default:
-			// Fallback: assume user-defined type with UnmarshalCBOR.
+			// Fallback: user-defined type. If it's a struct we
+			// generated code for, prefer DecodeTrusted. Otherwise,
+			// use the UnmarshalCBOR-based path (Safe decoder).
 			data.VarType = t.Name
-			if tmplName == "" {
+			if _, ok := generatedStructs[t.Name]; ok {
+				tmplName = "decodeCaseTrustedField"
+			} else {
 				tmplName = "decodeCaseUnmarshalField"
 			}
 		}
@@ -984,17 +1262,18 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 		} else {
 			return "", false
 		}
-	case *ast.ArrayType:
-		// []T containers (Trusted path reuses safe element readers).
-		if t.Len != nil {
-			return "", false
-		}
+		case *ast.ArrayType:
+			// []T containers (Trusted path uses same scalar readers
+			// but prefers DecodeTrusted for generated struct types).
+			if t.Len != nil {
+				return "", false
+			}
 		if ident, ok := t.Elt.(*ast.Ident); ok && ident.Name == "byte" {
 			tmplName = "decodeCaseBytes"
 			break
 		}
-		if ident, ok := t.Elt.(*ast.Ident); ok {
-			switch ident.Name {
+			if ident, ok := t.Elt.(*ast.Ident); ok {
+				switch ident.Name {
 			case "string":
 				data.VarType = "string"
 				data.ReadFunc = "ReadStringBytes"
@@ -1034,106 +1313,43 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 			case "float32":
 				data.VarType = "float32"
 				data.ReadFunc = "ReadFloat32Bytes"
-			case "float64":
-				data.VarType = "float64"
-				data.ReadFunc = "ReadFloat64Bytes"
-			default:
-				data.VarType = ident.Name
-				if tmplName == "" {
-					tmplName = "decodeCaseSliceStruct"
+				case "float64":
+					data.VarType = "float64"
+					data.ReadFunc = "ReadFloat64Bytes"
+				default:
+					data.VarType = ident.Name
+					if _, ok := generatedStructs[ident.Name]; ok {
+						tmplName = "decodeCaseSliceStructTrusted"
+					} else {
+						tmplName = "decodeCaseSliceStruct"
+					}
 				}
-			}
-			if tmplName == "" {
-				tmplName = "decodeCaseSliceBasic"
-			}
-			break
-		}
-		if star, ok := t.Elt.(*ast.StarExpr); ok {
-			if ident, ok2 := star.X.(*ast.Ident); ok2 {
-				data.VarType = ident.Name
 				if tmplName == "" {
-					tmplName = "decodeCaseSlicePtrStruct"
+					tmplName = "decodeCaseSliceBasic"
 				}
 				break
 			}
-		}
-		return "", false
-	case *ast.MapType:
-		// map[string]T containers for scalar or struct T (Trusted path)
-		keyIdent, okKey := t.Key.(*ast.Ident)
-		if !okKey || keyIdent.Name != "string" {
+			if star, ok := t.Elt.(*ast.StarExpr); ok {
+				if ident, ok2 := star.X.(*ast.Ident); ok2 {
+					data.VarType = ident.Name
+					if _, ok := generatedStructs[ident.Name]; ok {
+						tmplName = "decodeCaseSlicePtrStructTrusted"
+					} else {
+						tmplName = "decodeCaseSlicePtrStruct"
+					}
+					break
+				}
+			}
 			return "", false
-		}
-		if valIdent, okVal := t.Value.(*ast.Ident); okVal {
-			switch valIdent.Name {
-			case "string":
-				data.VarType = "string"
-				data.ReadFunc = "ReadStringBytes"
-			case "bool":
-				data.VarType = "bool"
-				data.ReadFunc = "ReadBoolBytes"
-			case "int":
-				data.VarType = "int"
-				data.ReadFunc = "ReadIntBytes"
-			case "int64":
-				data.VarType = "int64"
-				data.ReadFunc = "ReadInt64Bytes"
-			case "int32", "rune":
-				data.VarType = "int32"
-				data.ReadFunc = "ReadInt32Bytes"
-			case "int16":
-				data.VarType = "int16"
-				data.ReadFunc = "ReadInt16Bytes"
-			case "int8":
-				data.VarType = "int8"
-				data.ReadFunc = "ReadInt8Bytes"
-			case "uint":
-				data.VarType = "uint"
-				data.ReadFunc = "ReadUintBytes"
-			case "uint64":
-				data.VarType = "uint64"
-				data.ReadFunc = "ReadUint64Bytes"
-			case "uint32":
-				data.VarType = "uint32"
-				data.ReadFunc = "ReadUint32Bytes"
-			case "uint16":
-				data.VarType = "uint16"
-				data.ReadFunc = "ReadUint16Bytes"
-			case "uint8", "byte":
-				data.VarType = "uint8"
-				data.ReadFunc = "ReadUint8Bytes"
-			case "float32":
-				data.VarType = "float32"
-				data.ReadFunc = "ReadFloat32Bytes"
-		case "float64":
-			data.VarType = "float64"
-			data.ReadFunc = "ReadFloat64Bytes"
-		default:
-			data.VarType = valIdent.Name
-			if tmplName == "" {
-				tmplName = "decodeCaseMapStrStruct"
-			}
-		}
-		if tmplName == "" {
-			tmplName = "decodeCaseMapStrBasic"
-		}
-		break
-		}
-		if star, okVal := t.Value.(*ast.StarExpr); okVal {
-			if ident, ok2 := star.X.(*ast.Ident); ok2 {
-				data.VarType = ident.Name
-				if tmplName == "" {
-					tmplName = "decodeCaseMapStrPtrStruct"
-				}
-				break
-			}
-		}
-		return "", false
 	case *ast.StarExpr:
-		// Pointer to user-defined type with UnmarshalCBOR.
+		// Pointer to user-defined type. If the underlying type is a
+		// generated struct, prefer DecodeTrusted; otherwise fall back
+		// to the UnmarshalCBOR-based pointer path.
 		if ident, ok := t.X.(*ast.Ident); ok {
 			data.VarType = ident.Name
-			if tmplName == "" {
+			if _, ok := generatedStructs[ident.Name]; ok {
+				tmplName = "decodeCasePtrTrustedField"
+			} else {
 				tmplName = "decodeCasePtrUnmarshalField"
 			}
 			break
@@ -1166,6 +1382,7 @@ var marshalTemplate = template.Must(template.ParseFS(tmplfs.FS, "marshal.gotmpl"
 // empty string when the generic path should be used.
 func encodeExprForField(goName string, typ ast.Expr) string {
 	field := "x." + goName
+
 	switch t := typ.(type) {
 	case *ast.Ident:
 		// Specialize primitive scalars to direct AppendX calls so we
@@ -1203,65 +1420,37 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 		// For non-primitive identifiers, assume a struct type with
 		// a generated or user-defined MarshalCBOR method.
 		return field + ".MarshalCBOR(b)"
+
 	case *ast.ArrayType:
-		// Slices: specialize []string and slices of Marshaler types.
+		// Slices: specialize []string; more complex shapes rely on
+		// EncodeBlock-generated loops when appropriate.
 		if t.Len != nil {
 			return ""
 		}
-		switch elt := t.Elt.(type) {
-		case *ast.Ident:
-			// []string
-			if elt.Name == "string" {
-				return "cbor.AppendStringSlice(b, " + field + "), nil"
-			}
-			// []T where T is exported; assume T implements Marshaler.
-			if ast.IsExported(elt.Name) {
-				return "cbor.AppendSliceMarshaler(b, " + field + ")"
-			}
-		case *ast.StarExpr:
-			// []*T where T is exported; assume *T implements Marshaler.
-			if ident, ok := elt.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
-				return "cbor.AppendSliceMarshaler(b, " + field + ")"
-			}
+		if ident, ok := t.Elt.(*ast.Ident); ok && ident.Name == "string" {
+			return "cbor.AppendStringSlice(b, " + field + "), nil"
 		}
+
 	case *ast.MapType:
-		// Specialize a few common map shapes used by codegen: map[string]string
-		// and map[uint64]T where T has a MarshalCBOR implementation.
+		// Map[string]string remains supported via a helper; other
+		// hot maps (e.g. ConsumerState.Pending/Redelivered) use
+		// EncodeBlock-generated loops.
 		keyIdent, okKey := t.Key.(*ast.Ident)
 		if !okKey {
-			break
+			return ""
 		}
-		// map[string]string
 		if keyIdent.Name == "string" {
 			if valIdent, okVal := t.Value.(*ast.Ident); okVal && valIdent.Name == "string" {
 				return "cbor.AppendMapStrStr(b, " + field + "), nil"
 			}
 		}
-		// map[uint64]T specializations.
-		if keyIdent.Name == "uint64" {
-			switch v := t.Value.(type) {
-			case *ast.Ident:
-				// map[uint64]uint64
-				if v.Name == "uint64" {
-					return "cbor.AppendMapUint64Uint64(b, " + field + "), nil"
-				}
-				// map[uint64]T where T is exported; assume T has MarshalCBOR.
-				if ast.IsExported(v.Name) {
-					return "cbor.AppendMapUint64Marshaler(b, " + field + ")"
-				}
-			case *ast.StarExpr:
-				// map[uint64]*T where T is exported.
-				if ident, ok := v.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
-					return "cbor.AppendMapUint64Marshaler(b, " + field + ")"
-				}
-			}
+
+	case *ast.StarExpr:
+		// *T where T is exported; assume *T implements Marshaler.
+		if ident, ok := t.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
+			return "cbor.AppendPtrMarshaler(b, " + field + ")"
 		}
-		case *ast.StarExpr:
-			// *T where T is exported; assume *T implements Marshaler.
-			if ident, ok := t.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
-				return "cbor.AppendPtrMarshaler(b, " + field + ")"
-			}
-		}
+
 	case *ast.SelectorExpr:
 		// Handle common selector-based types, such as time.Time,
 		// time.Duration, and json.RawMessage, with direct calls.
@@ -1281,6 +1470,7 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 			}
 		}
 	}
+
 	// Fallback: let AppendInterface handle this field.
 	return ""
 }

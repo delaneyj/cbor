@@ -864,7 +864,10 @@ func AppendInterface(b []byte, i any) ([]byte, error) {
 
 				mv := rv.MapIndex(k)
 				val := mv.Interface()
-				// Prefer Marshaler if available, otherwise recurse via AppendInterface.
+				// Prefer Marshaler if available. For common generated
+				// patterns that use pointer receivers on value fields,
+				// synthesize a pointer and try that before falling back
+				// to AppendInterface.
 				if m, ok := val.(Marshaler); ok {
 					var err error
 					b, err = m.MarshalCBOR(b)
@@ -872,6 +875,18 @@ func AppendInterface(b []byte, i any) ([]byte, error) {
 						return b, err
 					}
 				} else {
+					// Try pointer to value type.
+					ptr := reflect.New(mv.Type())
+					ptr.Elem().Set(mv)
+					if m, ok := ptr.Interface().(Marshaler); ok {
+						var err error
+						b, err = m.MarshalCBOR(b)
+						if err != nil {
+							return b, err
+						}
+						continue
+					}
+
 					var err error
 					b, err = AppendInterface(b, val)
 					if err != nil {

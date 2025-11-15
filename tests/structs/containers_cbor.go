@@ -18,25 +18,51 @@ func (x *Containers) MarshalCBOR(b []byte) ([]byte, error) {
 
 	b = cbor.AppendMapHeader(b, 4)
 	var err error
+
 	b = cbor.AppendString(b, "items")
-	b, err = cbor.AppendInterface(b, x.Items)
-	if err != nil {
-		return b, err
+	b = cbor.AppendArrayHeader(b, uint32(len(x.Items)))
+	for i := range x.Items {
+		b, err = x.Items[i].MarshalCBOR(b)
+		if err != nil {
+			return b, err
+		}
 	}
+
 	b = cbor.AppendString(b, "ptrs")
-	b, err = cbor.AppendInterface(b, x.Ptrs)
-	if err != nil {
-		return b, err
+	b = cbor.AppendArrayHeader(b, uint32(len(x.Ptrs)))
+	for _, s := range x.Ptrs {
+		if s == nil {
+			b = cbor.AppendNil(b)
+		} else {
+			b, err = s.MarshalCBOR(b)
+			if err != nil {
+				return b, err
+			}
+		}
 	}
+
 	b = cbor.AppendString(b, "map")
-	b, err = cbor.AppendInterface(b, x.Map)
-	if err != nil {
-		return b, err
+	b = cbor.AppendMapHeader(b, uint32(len(x.Map)))
+	for k, v := range x.Map {
+		b = cbor.AppendString(b, k)
+		b, err = v.MarshalCBOR(b)
+		if err != nil {
+			return b, err
+		}
 	}
+
 	b = cbor.AppendString(b, "ptr_map")
-	b, err = cbor.AppendInterface(b, x.PtrMap)
-	if err != nil {
-		return b, err
+	b = cbor.AppendMapHeader(b, uint32(len(x.PtrMap)))
+	for k, v := range x.PtrMap {
+		b = cbor.AppendString(b, k)
+		if v == nil {
+			b = cbor.AppendNil(b)
+		} else {
+			b, err = v.MarshalCBOR(b)
+			if err != nil {
+				return b, err
+			}
+		}
 	}
 
 	return b, nil

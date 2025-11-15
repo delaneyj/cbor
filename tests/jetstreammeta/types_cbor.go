@@ -174,10 +174,11 @@ func (x *ClientInfo) MarshalCBOR(b []byte) ([]byte, error) {
 		}
 	}
 	if !(len(x.Alternates) == 0) {
+
 		b = cbor.AppendString(b, "alts")
-		b, err = cbor.AppendStringSlice(b, x.Alternates), nil
-		if err != nil {
-			return b, err
+		b = cbor.AppendArrayHeader(b, uint32(len(x.Alternates)))
+		for _, v := range x.Alternates {
+			b = cbor.AppendString(b, v)
 		}
 	}
 	if !(x.Stop == nil) {
@@ -209,10 +210,11 @@ func (x *ClientInfo) MarshalCBOR(b []byte) ([]byte, error) {
 		}
 	}
 	if !(len(x.Tags) == 0) {
+
 		b = cbor.AppendString(b, "tags")
-		b, err = cbor.AppendStringSlice(b, x.Tags), nil
-		if err != nil {
-			return b, err
+		b = cbor.AppendArrayHeader(b, uint32(len(x.Tags)))
+		for _, v := range x.Tags {
+			b = cbor.AppendString(b, v)
 		}
 	}
 	if !(x.Kind == "") {
@@ -729,10 +731,11 @@ func (x *RaftGroup) MarshalCBOR(b []byte) ([]byte, error) {
 	if err != nil {
 		return b, err
 	}
+
 	b = cbor.AppendString(b, "peers")
-	b, err = cbor.AppendStringSlice(b, x.Peers), nil
-	if err != nil {
-		return b, err
+	b = cbor.AppendArrayHeader(b, uint32(len(x.Peers)))
+	for _, v := range x.Peers {
+		b = cbor.AppendString(b, v)
 	}
 	b = cbor.AppendString(b, "store")
 	b, err = x.Storage.MarshalCBOR(b)
@@ -950,10 +953,7 @@ func (x *SequencePair) MarshalCBOR(b []byte) ([]byte, error) {
 
 	b = cbor.Require(b, x.Msgsize())
 
-	count := uint32(0)
-	count++
-	count++
-	b = cbor.AppendMapHeader(b, count)
+	b = cbor.AppendMapHeader(b, uint32(2))
 	var err error
 	b = cbor.AppendString(b, "consumer_seq")
 	b, err = cbor.AppendUint64(b, x.Consumer), nil
@@ -1071,10 +1071,7 @@ func (x *Pending) MarshalCBOR(b []byte) ([]byte, error) {
 
 	b = cbor.Require(b, x.Msgsize())
 
-	count := uint32(0)
-	count++
-	count++
-	b = cbor.AppendMapHeader(b, count)
+	b = cbor.AppendMapHeader(b, uint32(2))
 	var err error
 	b = cbor.AppendString(b, "sequence")
 	b, err = cbor.AppendUint64(b, x.Sequence), nil
@@ -1207,17 +1204,28 @@ func (x *ConsumerState) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	if !(len(x.Pending) == 0) {
+
 		b = cbor.AppendString(b, "pending")
-		b, err = cbor.AppendInterface(b, x.Pending)
-		if err != nil {
-			return b, err
+		b = cbor.AppendMapHeader(b, uint32(len(x.Pending)))
+		for k, v := range x.Pending {
+			b = cbor.AppendUint64(b, k)
+			if v == nil {
+				b = cbor.AppendNil(b)
+			} else {
+				b, err = v.MarshalCBOR(b)
+				if err != nil {
+					return b, err
+				}
+			}
 		}
 	}
 	if !(len(x.Redelivered) == 0) {
+
 		b = cbor.AppendString(b, "redelivered")
-		b, err = cbor.AppendInterface(b, x.Redelivered)
-		if err != nil {
-			return b, err
+		b = cbor.AppendMapHeader(b, uint32(len(x.Redelivered)))
+		for k, v := range x.Redelivered {
+			b = cbor.AppendUint64(b, k)
+			b = cbor.AppendUint64(b, v)
 		}
 	}
 
@@ -1292,27 +1300,74 @@ func (x *ConsumerState) DecodeTrusted(b []byte) ([]byte, error) {
 		switch key {
 		case "delivered":
 
-			v, err = x.Delivered.UnmarshalCBOR(v)
+			v, err = (&x.Delivered).DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
 		case "ack_floor":
 
-			v, err = x.AckFloor.UnmarshalCBOR(v)
+			v, err = (&x.AckFloor).DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
 		case "pending":
 
-			v, err = cbor.Skip(v)
+			var sz uint32
+			sz, v, err = cbor.ReadMapHeaderBytes(v)
 			if err != nil {
 				return b, err
 			}
+			if x.Pending == nil && sz > 0 {
+				x.Pending = make(map[uint64]*Pending, sz)
+			}
+			for iPending := uint32(0); iPending < sz; iPending++ {
+				var key uint64
+				key, v, err = cbor.ReadUint64Bytes(v)
+				if err != nil {
+					return b, err
+				}
+				if len(v) == 0 {
+					return b, cbor.ErrShortBytes
+				}
+				if v[0] == 0xf6 { // null
+					var tmp []byte
+					tmp, err = cbor.ReadNilBytes(v)
+					if err != nil {
+						return b, err
+					}
+					v = tmp
+					x.Pending[key] = nil
+					continue
+				}
+				val := new(Pending)
+				v, err = val.DecodeTrusted(v)
+				if err != nil {
+					return b, err
+				}
+				x.Pending[key] = val
+			}
 		case "redelivered":
 
-			v, err = cbor.Skip(v)
+			var sz uint32
+			sz, v, err = cbor.ReadMapHeaderBytes(v)
 			if err != nil {
 				return b, err
+			}
+			if x.Redelivered == nil && sz > 0 {
+				x.Redelivered = make(map[uint64]uint64, sz)
+			}
+			for iRedelivered := uint32(0); iRedelivered < sz; iRedelivered++ {
+				var key uint64
+				key, v, err = cbor.ReadUint64Bytes(v)
+				if err != nil {
+					return b, err
+				}
+				var val uint64
+				val, v, err = cbor.ReadUint64Bytes(v)
+				if err != nil {
+					return b, err
+				}
+				x.Redelivered[key] = val
 			}
 		default:
 			v, err = cbor.Skip(v)
@@ -1358,7 +1413,7 @@ func (x *consumerAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 	var err error
 	if !(x.Client == nil) {
 		b = cbor.AppendString(b, "client")
-		b, err = cbor.AppendInterface(b, x.Client)
+		b, err = cbor.AppendPtrMarshaler(b, x.Client)
 		if err != nil {
 			return b, err
 		}
@@ -1384,13 +1439,13 @@ func (x *consumerAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	b = cbor.AppendString(b, "group")
-	b, err = cbor.AppendInterface(b, x.Group)
+	b, err = cbor.AppendPtrMarshaler(b, x.Group)
 	if err != nil {
 		return b, err
 	}
 	if !(x.State == nil) {
 		b = cbor.AppendString(b, "state")
-		b, err = cbor.AppendInterface(b, x.State)
+		b, err = cbor.AppendPtrMarshaler(b, x.State)
 		if err != nil {
 			return b, err
 		}
@@ -1503,7 +1558,7 @@ func (x *consumerAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Client == nil {
 				x.Client = new(ClientInfo)
 			}
-			v, err = x.Client.UnmarshalCBOR(v)
+			v, err = x.Client.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -1542,7 +1597,7 @@ func (x *consumerAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Group == nil {
 				x.Group = new(RaftGroup)
 			}
-			v, err = x.Group.UnmarshalCBOR(v)
+			v, err = x.Group.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -1551,7 +1606,7 @@ func (x *consumerAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.State == nil {
 				x.State = new(ConsumerState)
 			}
-			v, err = x.State.UnmarshalCBOR(v)
+			v, err = x.State.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -1595,7 +1650,7 @@ func (x *streamAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 	var err error
 	if !(x.Client == nil) {
 		b = cbor.AppendString(b, "client")
-		b, err = cbor.AppendInterface(b, x.Client)
+		b, err = cbor.AppendPtrMarshaler(b, x.Client)
 		if err != nil {
 			return b, err
 		}
@@ -1611,7 +1666,7 @@ func (x *streamAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	b = cbor.AppendString(b, "group")
-	b, err = cbor.AppendInterface(b, x.Group)
+	b, err = cbor.AppendPtrMarshaler(b, x.Group)
 	if err != nil {
 		return b, err
 	}
@@ -1711,7 +1766,7 @@ func (x *streamAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Client == nil {
 				x.Client = new(ClientInfo)
 			}
-			v, err = x.Client.UnmarshalCBOR(v)
+			v, err = x.Client.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -1734,7 +1789,7 @@ func (x *streamAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Group == nil {
 				x.Group = new(RaftGroup)
 			}
-			v, err = x.Group.UnmarshalCBOR(v)
+			v, err = x.Group.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -1790,7 +1845,7 @@ func (x *WriteableConsumerAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 	var err error
 	if !(x.Client == nil) {
 		b = cbor.AppendString(b, "client")
-		b, err = cbor.AppendInterface(b, x.Client)
+		b, err = cbor.AppendPtrMarshaler(b, x.Client)
 		if err != nil {
 			return b, err
 		}
@@ -1816,13 +1871,13 @@ func (x *WriteableConsumerAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	b = cbor.AppendString(b, "group")
-	b, err = cbor.AppendInterface(b, x.Group)
+	b, err = cbor.AppendPtrMarshaler(b, x.Group)
 	if err != nil {
 		return b, err
 	}
 	if !(x.State == nil) {
 		b = cbor.AppendString(b, "state")
-		b, err = cbor.AppendInterface(b, x.State)
+		b, err = cbor.AppendPtrMarshaler(b, x.State)
 		if err != nil {
 			return b, err
 		}
@@ -1935,7 +1990,7 @@ func (x *WriteableConsumerAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Client == nil {
 				x.Client = new(ClientInfo)
 			}
-			v, err = x.Client.UnmarshalCBOR(v)
+			v, err = x.Client.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -1974,7 +2029,7 @@ func (x *WriteableConsumerAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Group == nil {
 				x.Group = new(RaftGroup)
 			}
-			v, err = x.Group.UnmarshalCBOR(v)
+			v, err = x.Group.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -1983,7 +2038,7 @@ func (x *WriteableConsumerAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.State == nil {
 				x.State = new(ConsumerState)
 			}
-			v, err = x.State.UnmarshalCBOR(v)
+			v, err = x.State.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -2030,7 +2085,7 @@ func (x *WriteableStreamAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 	var err error
 	if !(x.Client == nil) {
 		b = cbor.AppendString(b, "client")
-		b, err = cbor.AppendInterface(b, x.Client)
+		b, err = cbor.AppendPtrMarshaler(b, x.Client)
 		if err != nil {
 			return b, err
 		}
@@ -2046,7 +2101,7 @@ func (x *WriteableStreamAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	b = cbor.AppendString(b, "group")
-	b, err = cbor.AppendInterface(b, x.Group)
+	b, err = cbor.AppendPtrMarshaler(b, x.Group)
 	if err != nil {
 		return b, err
 	}
@@ -2056,10 +2111,18 @@ func (x *WriteableStreamAssignment) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	if !(len(x.Consumers) == 0) {
+
 		b = cbor.AppendString(b, "consumers")
-		b, err = cbor.AppendSliceMarshaler(b, x.Consumers)
-		if err != nil {
-			return b, err
+		b = cbor.AppendArrayHeader(b, uint32(len(x.Consumers)))
+		for _, w := range x.Consumers {
+			if w == nil {
+				b = cbor.AppendNil(b)
+			} else {
+				b, err = w.MarshalCBOR(b)
+				if err != nil {
+					return b, err
+				}
+			}
 		}
 	}
 
@@ -2174,7 +2237,7 @@ func (x *WriteableStreamAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Client == nil {
 				x.Client = new(ClientInfo)
 			}
-			v, err = x.Client.UnmarshalCBOR(v)
+			v, err = x.Client.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -2197,7 +2260,7 @@ func (x *WriteableStreamAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Group == nil {
 				x.Group = new(RaftGroup)
 			}
-			v, err = x.Group.UnmarshalCBOR(v)
+			v, err = x.Group.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -2225,7 +2288,7 @@ func (x *WriteableStreamAssignment) DecodeTrusted(b []byte) ([]byte, error) {
 				if x.Consumers[iConsumers] == nil {
 					x.Consumers[iConsumers] = new(WriteableConsumerAssignment)
 				}
-				v, err = x.Consumers[iConsumers].UnmarshalCBOR(v)
+				v, err = x.Consumers[iConsumers].DecodeTrusted(v)
 				if err != nil {
 					return b, err
 				}
@@ -2258,14 +2321,16 @@ func (x *MetaSnapshot) MarshalCBOR(b []byte) ([]byte, error) {
 
 	b = cbor.Require(b, x.Msgsize())
 
-	count := uint32(0)
-	count++
-	b = cbor.AppendMapHeader(b, count)
+	b = cbor.AppendMapHeader(b, uint32(1))
 	var err error
+
 	b = cbor.AppendString(b, "streams")
-	b, err = cbor.AppendSliceMarshaler(b, x.Streams)
-	if err != nil {
-		return b, err
+	b = cbor.AppendArrayHeader(b, uint32(len(x.Streams)))
+	for i := range x.Streams {
+		b, err = x.Streams[i].MarshalCBOR(b)
+		if err != nil {
+			return b, err
+		}
 	}
 
 	return b, nil
@@ -2347,7 +2412,7 @@ func (x *MetaSnapshot) DecodeTrusted(b []byte) ([]byte, error) {
 			}
 			for iStreams := uint32(0); iStreams < sz; iStreams++ {
 				var tmp WriteableStreamAssignment
-				v, err = (&tmp).UnmarshalCBOR(v)
+				v, err = (&tmp).DecodeTrusted(v)
 				if err != nil {
 					return b, err
 				}
@@ -2395,10 +2460,11 @@ func (x *StreamConfigSnapshot) MarshalCBOR(b []byte) ([]byte, error) {
 	if err != nil {
 		return b, err
 	}
+
 	b = cbor.AppendString(b, "subjects")
-	b, err = cbor.AppendStringSlice(b, x.Subjects), nil
-	if err != nil {
-		return b, err
+	b = cbor.AppendArrayHeader(b, uint32(len(x.Subjects)))
+	for _, v := range x.Subjects {
+		b = cbor.AppendString(b, v)
 	}
 	b = cbor.AppendString(b, "storage")
 	b, err = x.Storage.MarshalCBOR(b)
@@ -2406,10 +2472,12 @@ func (x *StreamConfigSnapshot) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	if !(len(x.Metadata) == 0) {
+
 		b = cbor.AppendString(b, "metadata")
-		b, err = cbor.AppendInterface(b, x.Metadata)
-		if err != nil {
-			return b, err
+		b = cbor.AppendMapHeader(b, uint32(len(x.Metadata)))
+		for k, v := range x.Metadata {
+			b = cbor.AppendString(b, k)
+			b = cbor.AppendString(b, v)
 		}
 	}
 
@@ -2627,10 +2695,12 @@ func (x *ConsumerConfigSnapshot) MarshalCBOR(b []byte) ([]byte, error) {
 		return b, err
 	}
 	if !(len(x.Metadata) == 0) {
+
 		b = cbor.AppendString(b, "metadata")
-		b, err = cbor.AppendInterface(b, x.Metadata)
-		if err != nil {
-			return b, err
+		b = cbor.AppendMapHeader(b, uint32(len(x.Metadata)))
+		for k, v := range x.Metadata {
+			b = cbor.AppendString(b, k)
+			b = cbor.AppendString(b, v)
 		}
 	}
 
