@@ -1,7 +1,10 @@
+//go:build goexperiment.jsonv2
+
 package main
 
 import (
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"flag"
 	"fmt"
 	"os"
@@ -9,7 +12,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	jsonv2 "github.com/go-json-experiment/json"
 	js "github.com/delaneyj/cbor/tests/jetstreammeta"
 	msgpjs "github.com/delaneyj/cbor/benchmarks/jetstreammeta_msgp"
 )
@@ -109,7 +111,7 @@ func main() {
 		},
 	))
 
-	rows = append(rows, runCodecBench("JSON v2 (json-experiment)", len(jsonV2Buf), jsonV2Err,
+	rows = append(rows, runCodecBench("JSON v2 (encoding/json/v2)", len(jsonV2Buf), jsonV2Err,
 		func(b *testing.B) { // encode
 			if jsonV2Err != nil {
 				return
@@ -360,4 +362,3 @@ func printTable(rows []benchResult, streams, consumers int) {
 	}
 	_ = tw.Flush()
 }
-
