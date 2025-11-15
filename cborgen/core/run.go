@@ -30,13 +30,15 @@ var generatedStructs = map[string]struct{}{}
 // Additional switches can be added over time.
 type Options struct {
 	Verbose bool
+	// Structs, if non-empty, restricts generation to the
+	// named struct types. Names must match Go type names
+	// exactly (no package qualification).
+	Structs []string
 }
 
 // Run generates CBOR code for a single Go source file.
 // It emits per-struct encode/decode implementations into outputPath.
 func Run(inputPath, outputPath string, opts Options) error {
-	_ = opts
-
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, inputPath, nil, parser.ParseComments)
 	if err != nil {
@@ -44,7 +46,7 @@ func Run(inputPath, outputPath string, opts Options) error {
 	}
 
 	pkg := file.Name.Name
-	return generateStructCode(fset, file, outputPath, pkg)
+	return generateStructCode(fset, file, outputPath, pkg, opts)
 }
 
 // ensureRuntime materializes cbor_runtime.go in the given directory if
@@ -189,9 +191,21 @@ type structSpec struct {
 //   - if cbor tag present: it wins
 //   - if cbor tag absent, json tag is used
 //   - if both absent, Go field name is used
-func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg string) error {
+func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg string, opts Options) error {
 	var structs []structSpec
 	useOmit := false
+
+	var allowed map[string]struct{}
+	if len(opts.Structs) > 0 {
+		allowed = make(map[string]struct{}, len(opts.Structs))
+		for _, name := range opts.Structs {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			allowed[name] = struct{}{}
+		}
+	}
 
 	for _, decl := range file.Decls {
 		gd, ok := decl.(*ast.GenDecl)
@@ -207,7 +221,14 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 			if !ok {
 				continue
 			}
-				ss := structSpec{Name: ts.Name.Name}
+			// If a struct allowlist is provided, skip
+			// types that are not explicitly listed.
+			if len(allowed) > 0 {
+				if _, ok := allowed[ts.Name.Name]; !ok {
+					continue
+				}
+			}
+			ss := structSpec{Name: ts.Name.Name}
 				var sizeExprParts []string
 			for _, field := range st.Fields.List {
 				// Skip anonymous fields for now.

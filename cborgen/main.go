@@ -19,12 +19,12 @@ import (
 //   - verbose: turn on diagnostic logging
 //
 // In directory mode, each source file gets its own
-// "*_cbor.go" companion file and the --output flag
-// is rejected.
+// "*_cbor.go" companion file and the --output flag is rejected.
 type CLI struct {
-	Input   string `short:"i" help:"Input Go file or directory" default:"${env:GOFILE}"`
-	Output  string `short:"o" help:"Output file (file input only; defaults to {input}_cbor.go)"`
-	Verbose bool   `short:"v" help:"Enable verbose diagnostics"`
+	Input   string   `short:"i" help:"Input Go file or directory" default:"${env:GOFILE}"`
+	Output  string   `short:"o" help:"Output file (file input only; defaults to {input}_cbor.go)"`
+	Structs []string `short:"s" help:"Only generate for these struct types (may be repeated)"`
+	Verbose bool     `short:"v" help:"Enable verbose diagnostics"`
 }
 
 func main() {
@@ -54,7 +54,7 @@ func run(cli *CLI) error {
 		if cli.Output != "" {
 			return errors.New("--output is not allowed when input is a directory")
 		}
-		return runForDir(input, cli.Verbose)
+		return runForDir(input, cli.Verbose, cli.Structs)
 	}
 
 	// Single-file mode.
@@ -62,12 +62,12 @@ func run(cli *CLI) error {
 	if strings.TrimSpace(out) == "" {
 		out = defaultOutputPath(input)
 	}
-	return generateForFile(input, out, cli.Verbose)
+	return generateForFile(input, out, cli.Verbose, cli.Structs)
 }
 
 // runForDir walks a directory and generates a companion
 // "*_cbor.go" file for each eligible Go source file.
-func runForDir(dir string, verbose bool) error {
+func runForDir(dir string, verbose bool, structs []string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("read dir %q: %w", dir, err)
@@ -98,7 +98,7 @@ func runForDir(dir string, verbose bool) error {
 		}
 
 		outPath := defaultOutputPath(inPath)
-		if err := generateForFile(inPath, outPath, verbose); err != nil {
+		if err := generateForFile(inPath, outPath, verbose, structs); err != nil {
 			return err
 		}
 	}
@@ -119,7 +119,6 @@ func defaultOutputPath(inputPath string) string {
 	return filepath.Join(dir, name)
 }
 
-func generateForFile(inputPath, outputPath string, verbose bool) error {
-	return core.Run(inputPath, outputPath, core.Options{Verbose: verbose})
+func generateForFile(inputPath, outputPath string, verbose bool, structs []string) error {
+	return core.Run(inputPath, outputPath, core.Options{Verbose: verbose, Structs: structs})
 }
-
