@@ -24,12 +24,12 @@ Inputs:
 */}}
 
 {{define "encodeMapUint64PtrMarshaler"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendMapHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendMapHeader"}}(b, uint32(len({{.FieldRef}})))
 	for k, v := range {{.FieldRef}} {
-		b = AppendUint64(b, k)
+		b = {{rt "AppendUint64"}}(b, k)
 		if v == nil {
-			b = AppendNil(b)
+			b = {{rt "AppendNil"}}(b)
 		} else {
 			b, err = v.MarshalCBOR(b)
 			if err != nil { return b, err }
@@ -38,40 +38,40 @@ Inputs:
 {{end}}
 
 {{define "encodeMapUint64Uint64"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendMapHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendMapHeader"}}(b, uint32(len({{.FieldRef}})))
 	for k, v := range {{.FieldRef}} {
-		b = AppendUint64(b, k)
-		b = AppendUint64(b, v)
+		b = {{rt "AppendUint64"}}(b, k)
+		b = {{rt "AppendUint64"}}(b, v)
 	}
 {{end}}
 
 {{define "encodeMapStrStr"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendMapHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendMapHeader"}}(b, uint32(len({{.FieldRef}})))
 	for k, v := range {{.FieldRef}} {
-		b = AppendString(b, k)
-		b = AppendString(b, v)
+		b = {{rt "AppendString"}}(b, k)
+		b = {{rt "AppendString"}}(b, v)
 	}
 {{end}}
 
 {{define "encodeMapStrValueMarshaler"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendMapHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendMapHeader"}}(b, uint32(len({{.FieldRef}})))
 	for k, v := range {{.FieldRef}} {
-		b = AppendString(b, k)
+		b = {{rt "AppendString"}}(b, k)
 		b, err = v.MarshalCBOR(b)
 		if err != nil { return b, err }
 	}
 {{end}}
 
 {{define "encodeMapStrPtrMarshaler"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendMapHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendMapHeader"}}(b, uint32(len({{.FieldRef}})))
 	for k, v := range {{.FieldRef}} {
-		b = AppendString(b, k)
+		b = {{rt "AppendString"}}(b, k)
 		if v == nil {
-			b = AppendNil(b)
+			b = {{rt "AppendNil"}}(b)
 		} else {
 			b, err = v.MarshalCBOR(b)
 			if err != nil { return b, err }
@@ -80,20 +80,20 @@ Inputs:
 {{end}}
 
 {{define "encodeMapStrScalar"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendMapHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendMapHeader"}}(b, uint32(len({{.FieldRef}})))
 	for k, v := range {{.FieldRef}} {
-		b = AppendString(b, k)
+		b = {{rt "AppendString"}}(b, k)
 		b = {{.AppendFunc}}(b, v)
 	}
 {{end}}
 
 {{define "encodeSlicePtrMarshaler"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendArrayHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendArrayHeader"}}(b, uint32(len({{.FieldRef}})))
 	for _, {{.ElemVar}} := range {{.FieldRef}} {
 		if {{.ElemVar}} == nil {
-			b = AppendNil(b)
+			b = {{rt "AppendNil"}}(b)
 		} else {
 			b, err = {{.ElemVar}}.MarshalCBOR(b)
 			if err != nil { return b, err }
@@ -102,8 +102,8 @@ Inputs:
 {{end}}
 
 {{define "encodeSliceValueMarshaler"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendArrayHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendArrayHeader"}}(b, uint32(len({{.FieldRef}})))
 	for i := range {{.FieldRef}} {
 		b, err = {{.FieldRef}}[i].MarshalCBOR(b)
 		if err != nil { return b, err }
@@ -111,8 +111,8 @@ Inputs:
 {{end}}
 
 {{define "encodeSliceScalar"}}
-	b = AppendString(b, "{{.KeyName}}")
-	b = AppendArrayHeader(b, uint32(len({{.FieldRef}})))
+	b = {{rt "AppendString"}}(b, "{{.KeyName}}")
+	b = {{rt "AppendArrayHeader"}}(b, uint32(len({{.FieldRef}})))
 	for _, v := range {{.FieldRef}} {
 		b = {{.AppendFunc}}(b, v)
 	}

@@ -14,10 +14,11 @@ import (
 	"strings"
 	"text/template"
 
+	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/imports"
 
-	cbor "github.com/delaneyj/cbor/runtime"
 	tmplfs "github.com/delaneyj/cbor/cborgen/templates"
+	cbor "github.com/delaneyj/cbor/runtime"
 )
 
 // generatedStructs tracks struct types for which cborgen is generating
@@ -25,6 +26,16 @@ import (
 // when DecodeTrusted can be used for nested fields instead of falling
 // back to the generic UnmarshalCBOR path.
 var generatedStructs = map[string]struct{}{}
+
+const runtimePrefix = "cbor"
+
+var templateFuncs = template.FuncMap{
+	"rt": runtimeName,
+}
+
+func runtimeName(name string) string {
+	return runtimePrefix + name
+}
 
 // Options configures how generation runs.
 // Additional switches can be added over time.
@@ -61,12 +72,6 @@ func Run(inputPath, outputPath string, opts Options) error {
 // runtime sources with the package line rewritten to match pkg.
 func ensureRuntime(dir, pkg string) error {
 	path := filepath.Join(dir, "cbor_runtime.go")
-	if _, err := os.Stat(path); err == nil {
-		// Already present.
-		return nil
-	} else if !os.IsNotExist(err) {
-		return err
-	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -107,6 +112,8 @@ func ensureRuntime(dir, pkg string) error {
 	if amalgamated == nil {
 		return nil
 	}
+
+	prefixRuntime(amalgamated, runtimePrefix)
 
 	// Consolidate all import declarations at the top of the file and
 	// remove duplicates so that the generated cbor_runtime.go is a
@@ -171,17 +178,90 @@ func ensureRuntime(dir, pkg string) error {
 	return os.WriteFile(path, src, 0o644)
 }
 
+func prefixRuntime(f *ast.File, prefix string) {
+	rename := make(map[string]string)
+	withPrefix := func(name string) string {
+		newName := prefix + name
+		rename[name] = newName
+		return newName
+	}
+
+	for _, decl := range f.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			if d.Tok == token.IMPORT {
+				continue
+			}
+			for _, spec := range d.Specs {
+				switch s := spec.(type) {
+				case *ast.TypeSpec:
+					if s.Name != nil && s.Name.Name != "" {
+						s.Name = ast.NewIdent(withPrefix(s.Name.Name))
+					}
+				case *ast.ValueSpec:
+					for _, n := range s.Names {
+						if n == nil || n.Name == "" || n.Name == "_" {
+							continue
+						}
+						n.Name = withPrefix(n.Name)
+						n.Obj = nil
+					}
+				}
+			}
+		case *ast.FuncDecl:
+			if d.Recv != nil || d.Name == nil || d.Name.Name == "" || d.Name.Name == "init" {
+				continue
+			}
+			d.Name = ast.NewIdent(withPrefix(d.Name.Name))
+		}
+	}
+
+	astutil.Apply(f, func(c *astutil.Cursor) bool { return true }, func(c *astutil.Cursor) bool {
+		ident, ok := c.Node().(*ast.Ident)
+		if !ok || ident.Name == "" {
+			return true
+		}
+
+		// Skip selector suffixes (pkg.Sel or value.Sel).
+		if sel, ok := c.Parent().(*ast.SelectorExpr); ok && sel.Sel == ident {
+			return true
+		}
+		// Skip field/method names (struct fields, interface methods).
+		if field, ok := c.Parent().(*ast.Field); ok {
+			for _, n := range field.Names {
+				if n == ident {
+					return true
+				}
+			}
+		}
+		// Skip function names themselves; methods (Recv != nil) should retain their names.
+		if fd, ok := c.Parent().(*ast.FuncDecl); ok && fd.Name == ident {
+			return true
+		}
+
+		newName, ok := rename[ident.Name]
+		if !ok {
+			return true
+		}
+		if imp, ok := c.Parent().(*ast.ImportSpec); ok && imp.Name == ident {
+			return true
+		}
+		ident.Name = newName
+		return true
+	})
+}
+
 type fieldSpec struct {
-	GoName    string
-	CBORName  string
-	OmitEmpty bool
-	ZeroCheck string
+	GoName          string
+	CBORName        string
+	OmitEmpty       bool
+	ZeroCheck       string
 	DecodeCaseSafe  string
 	DecodeCaseTrust string
 	EncodeCase      string
 	EncodeExpr      string
 	EncodeBlock     string
-	Ignore    bool
+	Ignore          bool
 }
 
 type structSpec struct {
@@ -236,7 +316,7 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 				}
 			}
 			ss := structSpec{Name: ts.Name.Name}
-				var sizeExprParts []string
+			var sizeExprParts []string
 			for _, field := range st.Fields.List {
 				// Skip anonymous fields for now.
 				if len(field.Names) == 0 {
@@ -264,11 +344,11 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 				if szExpr, ok := fieldSizeExpr(fs.CBORName, fs.GoName, field.Type); ok {
 					sizeExprParts = append(sizeExprParts, szExpr)
 				}
-					if ec, ok := encodeCaseExpr(fs.GoName, field.Type); ok {
-						fs.EncodeCase = ec
-					}
-					fs.EncodeExpr = encodeExprForField(fs.GoName, field.Type)
-					fs.EncodeBlock = encodeBlockForField(ss.Name, fs.GoName, fs.CBORName, field.Type)
+				if ec, ok := encodeCaseExpr(fs.GoName, field.Type); ok {
+					fs.EncodeCase = ec
+				}
+				fs.EncodeExpr = encodeExprForField(fs.GoName, field.Type)
+				fs.EncodeBlock = encodeBlockForField(ss.Name, fs.GoName, fs.CBORName, field.Type)
 				if dc, ok := decodeCaseExprSafe(ss.Name, fs.GoName, field.Type); ok {
 					fs.DecodeCaseSafe = dc
 				} else {
@@ -289,11 +369,11 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 				}
 				ss.Fields = append(ss.Fields, fs)
 			}
-				if len(ss.Fields) > 0 {
-					generatedStructs[ss.Name] = struct{}{}
+			if len(ss.Fields) > 0 {
+				generatedStructs[ss.Name] = struct{}{}
 				if len(sizeExprParts) > 0 {
 					// Map header plus per-field key/value contributions.
-					ss.MsgSizeExpr = "MapHeaderSize" + " + " + strings.Join(sizeExprParts, " + ")
+					ss.MsgSizeExpr = runtimeName("MapHeaderSize") + " + " + strings.Join(sizeExprParts, " + ")
 				}
 				structs = append(structs, ss)
 			}
@@ -321,7 +401,7 @@ func generateStructCode(fset *token.FileSet, file *ast.File, outputPath, pkg str
 	}
 
 	var buf bytes.Buffer
-	if err := marshalTemplate.Execute(&buf, data); err != nil {
+	if err := marshalTemplate.ExecuteTemplate(&buf, "marshal.gotmpl", data); err != nil {
 		return err
 	}
 
@@ -402,7 +482,7 @@ type zeroCheckTemplateData struct {
 	Kind     string
 }
 
-var zeroCheckTemplate = template.Must(template.New("zero_check").ParseFS(tmplfs.FS, "zero_check.gotmpl"))
+var zeroCheckTemplate = template.Must(template.New("zero_check").Funcs(templateFuncs).ParseFS(tmplfs.FS, "zero_check.gotmpl"))
 
 type decodeCaseTemplateData struct {
 	Field    string
@@ -410,7 +490,7 @@ type decodeCaseTemplateData struct {
 	ReadFunc string
 }
 
-var decodeCaseTemplate = template.Must(template.New("decode_case").ParseFS(tmplfs.FS, "decode_case.gotmpl"))
+var decodeCaseTemplate = template.Must(template.New("decode_case").Funcs(templateFuncs).ParseFS(tmplfs.FS, "decode_case.gotmpl"))
 
 type encodeBlockTemplateData struct {
 	StructName string
@@ -422,14 +502,15 @@ type encodeBlockTemplateData struct {
 	AppendFunc string
 }
 
-var encodeBlockTemplate = template.Must(template.New("encode_block").ParseFS(tmplfs.FS, "encode_block.gotmpl"))
+var encodeBlockTemplate = template.Must(template.New("encode_block").Funcs(templateFuncs).ParseFS(tmplfs.FS, "encode_block.gotmpl"))
 
 // fieldSizeExpr builds a worst-case size expression for a single field
 // with the given CBOR name and Go field name. The returned expression
 // is written in terms of receiver 'x'. It returns ok=false if the type
 // is not supported for Msgsize.
 func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool) {
-	key := fmt.Sprintf("StringPrefixSize + len(%q)", cborName)
+	rt := runtimeName
+	key := fmt.Sprintf("%s + len(%q)", rt("StringPrefixSize"), cborName)
 	fieldRef := "x." + goName
 	val := ""
 
@@ -437,33 +518,33 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 	case *ast.Ident:
 		switch t.Name {
 		case "string":
-			val = "StringPrefixSize + len(" + fieldRef + ")"
+			val = rt("StringPrefixSize") + " + len(" + fieldRef + ")"
 		case "bool":
-			val = "BoolSize"
+			val = rt("BoolSize")
 		case "int":
-			val = "IntSize"
+			val = rt("IntSize")
 		case "int64":
-			val = "Int64Size"
+			val = rt("Int64Size")
 		case "int32", "rune":
-			val = "Int32Size"
+			val = rt("Int32Size")
 		case "int16":
-			val = "Int16Size"
+			val = rt("Int16Size")
 		case "int8":
-			val = "Int8Size"
+			val = rt("Int8Size")
 		case "uint":
-			val = "UintSize"
+			val = rt("UintSize")
 		case "uint64":
-			val = "Uint64Size"
+			val = rt("Uint64Size")
 		case "uint32":
-			val = "Uint32Size"
+			val = rt("Uint32Size")
 		case "uint16":
-			val = "Uint16Size"
+			val = rt("Uint16Size")
 		case "uint8", "byte":
-			val = "Uint8Size"
+			val = rt("Uint8Size")
 		case "float32":
-			val = "Float32Size"
+			val = rt("Float32Size")
 		case "float64":
-			val = "Float64Size"
+			val = rt("Float64Size")
 		default:
 			return "", false
 		}
@@ -471,9 +552,9 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 		// Support common time-based primitives.
 		switch t.Sel.Name {
 		case "Time":
-			val = "TimeSize"
+			val = rt("TimeSize")
 		case "Duration":
-			val = "DurationSize"
+			val = rt("DurationSize")
 		default:
 			return "", false
 		}
@@ -484,45 +565,45 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 		}
 		// []byte: use bytes prefix + len(slice)
 		if ident.Name == "byte" {
-			val = "BytesPrefixSize + len(" + fieldRef + ")"
+			val = rt("BytesPrefixSize") + " + len(" + fieldRef + ")"
 		} else {
-				// Other supported scalar slices: approximate as header + len(slice)*elemSize.
+			// Other supported scalar slices: approximate as header + len(slice)*elemSize.
 			var elem string
 			switch ident.Name {
 			case "string":
 				// Prefix per element; data length is accounted for elsewhere at runtime.
-				elem = "StringPrefixSize"
+				elem = rt("StringPrefixSize")
 			case "bool":
-				elem = "BoolSize"
+				elem = rt("BoolSize")
 			case "int":
-				elem = "IntSize"
+				elem = rt("IntSize")
 			case "int64":
-				elem = "Int64Size"
+				elem = rt("Int64Size")
 			case "int32", "rune":
-				elem = "Int32Size"
+				elem = rt("Int32Size")
 			case "int16":
-				elem = "Int16Size"
+				elem = rt("Int16Size")
 			case "int8":
-				elem = "Int8Size"
+				elem = rt("Int8Size")
 			case "uint":
-				elem = "UintSize"
+				elem = rt("UintSize")
 			case "uint64":
-				elem = "Uint64Size"
+				elem = rt("Uint64Size")
 			case "uint32":
-				elem = "Uint32Size"
+				elem = rt("Uint32Size")
 			case "uint16":
-				elem = "Uint16Size"
+				elem = rt("Uint16Size")
 			case "uint8", "byte":
-				elem = "Uint8Size"
+				elem = rt("Uint8Size")
 			case "float32":
-				elem = "Float32Size"
+				elem = rt("Float32Size")
 			case "float64":
-				elem = "Float64Size"
+				elem = rt("Float64Size")
 			default:
 				// Unknown element types are not sized.
 				elem = "0"
 			}
-			val = "ArrayHeaderSize + len(" + fieldRef + ")*" + elem
+			val = rt("ArrayHeaderSize") + " + len(" + fieldRef + ")*" + elem
 		}
 	case *ast.MapType:
 		// map[string]T: approximate as header plus per-entry constant.
@@ -535,38 +616,38 @@ func fieldSizeExpr(cborName, goName string, typ ast.Expr) (expr string, ok bool)
 		switch valIdent.Name {
 		case "string":
 			// Prefix for the value; data length is accounted for elsewhere at runtime.
-			elem = "StringPrefixSize"
+			elem = rt("StringPrefixSize")
 		case "bool":
-			elem = "BoolSize"
+			elem = rt("BoolSize")
 		case "int":
-			elem = "IntSize"
+			elem = rt("IntSize")
 		case "int64":
-			elem = "Int64Size"
+			elem = rt("Int64Size")
 		case "int32", "rune":
-			elem = "Int32Size"
+			elem = rt("Int32Size")
 		case "int16":
-			elem = "Int16Size"
+			elem = rt("Int16Size")
 		case "int8":
-			elem = "Int8Size"
+			elem = rt("Int8Size")
 		case "uint":
-			elem = "UintSize"
+			elem = rt("UintSize")
 		case "uint64":
-			elem = "Uint64Size"
+			elem = rt("Uint64Size")
 		case "uint32":
-			elem = "Uint32Size"
+			elem = rt("Uint32Size")
 		case "uint16":
-			elem = "Uint16Size"
+			elem = rt("Uint16Size")
 		case "uint8", "byte":
-			elem = "Uint8Size"
+			elem = rt("Uint8Size")
 		case "float32":
-			elem = "Float32Size"
+			elem = rt("Float32Size")
 		case "float64":
-			elem = "Float64Size"
+			elem = rt("Float64Size")
 		default:
 			// Fallback: only header + key prefix per entry.
 			elem = "0"
 		}
-		val = "MapHeaderSize + len(" + fieldRef + ")*(StringPrefixSize + " + elem + ")"
+		val = rt("MapHeaderSize") + " + len(" + fieldRef + ")*(" + rt("StringPrefixSize") + " + " + elem + ")"
 	default:
 		return "", false
 	}
@@ -592,6 +673,7 @@ func encodeBlockForField(structName, goName, cborName string, typ ast.Expr) stri
 		KeyName:    cborName,
 	}
 
+	rt := runtimeName
 	tmplName := ""
 
 	switch t := typ.(type) {
@@ -622,31 +704,31 @@ func encodeBlockForField(structName, goName, cborName string, typ ast.Expr) stri
 					// Dedicated helper for map[string]string.
 					tmplName = "encodeMapStrStr"
 				case "bool":
-					data.AppendFunc = "AppendBool"
+					data.AppendFunc = rt("AppendBool")
 				case "int":
-					data.AppendFunc = "AppendInt"
+					data.AppendFunc = rt("AppendInt")
 				case "int8":
-					data.AppendFunc = "AppendInt8"
+					data.AppendFunc = rt("AppendInt8")
 				case "int16":
-					data.AppendFunc = "AppendInt16"
+					data.AppendFunc = rt("AppendInt16")
 				case "int32", "rune":
-					data.AppendFunc = "AppendInt32"
+					data.AppendFunc = rt("AppendInt32")
 				case "int64":
-					data.AppendFunc = "AppendInt64"
+					data.AppendFunc = rt("AppendInt64")
 				case "uint":
-					data.AppendFunc = "AppendUint"
+					data.AppendFunc = rt("AppendUint")
 				case "uint8", "byte":
-					data.AppendFunc = "AppendUint8"
+					data.AppendFunc = rt("AppendUint8")
 				case "uint16":
-					data.AppendFunc = "AppendUint16"
+					data.AppendFunc = rt("AppendUint16")
 				case "uint32":
-					data.AppendFunc = "AppendUint32"
+					data.AppendFunc = rt("AppendUint32")
 				case "uint64":
-					data.AppendFunc = "AppendUint64"
+					data.AppendFunc = rt("AppendUint64")
 				case "float32":
-					data.AppendFunc = "AppendFloat32"
+					data.AppendFunc = rt("AppendFloat32")
 				case "float64":
-					data.AppendFunc = "AppendFloat64"
+					data.AppendFunc = rt("AppendFloat64")
 				}
 				if data.AppendFunc != "" && tmplName == "" {
 					tmplName = "encodeMapStrScalar"
@@ -675,33 +757,33 @@ func encodeBlockForField(structName, goName, cborName string, typ ast.Expr) stri
 			}
 			switch ident.Name {
 			case "string":
-				data.AppendFunc = "AppendString"
+				data.AppendFunc = rt("AppendString")
 			case "bool":
-				data.AppendFunc = "AppendBool"
+				data.AppendFunc = rt("AppendBool")
 			case "int":
-				data.AppendFunc = "AppendInt"
+				data.AppendFunc = rt("AppendInt")
 			case "int8":
-				data.AppendFunc = "AppendInt8"
+				data.AppendFunc = rt("AppendInt8")
 			case "int16":
-				data.AppendFunc = "AppendInt16"
+				data.AppendFunc = rt("AppendInt16")
 			case "int32", "rune":
-				data.AppendFunc = "AppendInt32"
+				data.AppendFunc = rt("AppendInt32")
 			case "int64":
-				data.AppendFunc = "AppendInt64"
+				data.AppendFunc = rt("AppendInt64")
 			case "uint":
-				data.AppendFunc = "AppendUint"
+				data.AppendFunc = rt("AppendUint")
 			case "uint8", "byte":
-				data.AppendFunc = "AppendUint8"
+				data.AppendFunc = rt("AppendUint8")
 			case "uint16":
-				data.AppendFunc = "AppendUint16"
+				data.AppendFunc = rt("AppendUint16")
 			case "uint32":
-				data.AppendFunc = "AppendUint32"
+				data.AppendFunc = rt("AppendUint32")
 			case "uint64":
-				data.AppendFunc = "AppendUint64"
+				data.AppendFunc = rt("AppendUint64")
 			case "float32":
-				data.AppendFunc = "AppendFloat32"
+				data.AppendFunc = rt("AppendFloat32")
 			case "float64":
-				data.AppendFunc = "AppendFloat64"
+				data.AppendFunc = rt("AppendFloat64")
 			}
 			if data.AppendFunc != "" {
 				tmplName = "encodeSliceScalar"
@@ -834,52 +916,53 @@ func zeroCheckExpr(goName string, typ ast.Expr) (expr string, ok bool) {
 func decodeCaseExprSafe(structName, goName string, typ ast.Expr) (string, bool) {
 	data := decodeCaseTemplateData{Field: goName}
 	tmplName := ""
+	rt := runtimeName
 
 	switch t := typ.(type) {
 	case *ast.Ident:
 		switch t.Name {
 		case "string":
 			data.VarType = "string"
-			data.ReadFunc = "ReadStringBytes"
+			data.ReadFunc = rt("ReadStringBytes")
 		case "bool":
 			data.VarType = "bool"
-			data.ReadFunc = "ReadBoolBytes"
+			data.ReadFunc = rt("ReadBoolBytes")
 		case "int":
 			data.VarType = "int"
-			data.ReadFunc = "ReadIntBytes"
+			data.ReadFunc = rt("ReadIntBytes")
 		case "int64":
 			data.VarType = "int64"
-			data.ReadFunc = "ReadInt64Bytes"
+			data.ReadFunc = rt("ReadInt64Bytes")
 		case "int32", "rune":
 			data.VarType = "int32"
-			data.ReadFunc = "ReadInt32Bytes"
+			data.ReadFunc = rt("ReadInt32Bytes")
 		case "int16":
 			data.VarType = "int16"
-			data.ReadFunc = "ReadInt16Bytes"
+			data.ReadFunc = rt("ReadInt16Bytes")
 		case "int8":
 			data.VarType = "int8"
-			data.ReadFunc = "ReadInt8Bytes"
+			data.ReadFunc = rt("ReadInt8Bytes")
 		case "uint":
 			data.VarType = "uint"
-			data.ReadFunc = "ReadUintBytes"
+			data.ReadFunc = rt("ReadUintBytes")
 		case "uint64":
 			data.VarType = "uint64"
-			data.ReadFunc = "ReadUint64Bytes"
+			data.ReadFunc = rt("ReadUint64Bytes")
 		case "uint32":
 			data.VarType = "uint32"
-			data.ReadFunc = "ReadUint32Bytes"
+			data.ReadFunc = rt("ReadUint32Bytes")
 		case "uint16":
 			data.VarType = "uint16"
-			data.ReadFunc = "ReadUint16Bytes"
+			data.ReadFunc = rt("ReadUint16Bytes")
 		case "uint8", "byte":
 			data.VarType = "uint8"
-			data.ReadFunc = "ReadUint8Bytes"
+			data.ReadFunc = rt("ReadUint8Bytes")
 		case "float32":
 			data.VarType = "float32"
-			data.ReadFunc = "ReadFloat32Bytes"
+			data.ReadFunc = rt("ReadFloat32Bytes")
 		case "float64":
 			data.VarType = "float64"
-			data.ReadFunc = "ReadFloat64Bytes"
+			data.ReadFunc = rt("ReadFloat64Bytes")
 		default:
 			// Fallback: assume user-defined type with UnmarshalCBOR.
 			data.VarType = t.Name
@@ -895,10 +978,10 @@ func decodeCaseExprSafe(structName, goName string, typ ast.Expr) (string, bool) 
 				switch t.Sel.Name {
 				case "Time":
 					data.VarType = "time.Time"
-					data.ReadFunc = "ReadTimeBytes"
+					data.ReadFunc = rt("ReadTimeBytes")
 				case "Duration":
 					data.VarType = "time.Duration"
-					data.ReadFunc = "ReadDurationBytes"
+					data.ReadFunc = rt("ReadDurationBytes")
 				default:
 					return "", false
 				}
@@ -908,7 +991,7 @@ func decodeCaseExprSafe(structName, goName string, typ ast.Expr) (string, bool) 
 					return "", false
 				}
 				data.VarType = "json.Number"
-				data.ReadFunc = "ReadJSONNumberBytes"
+				data.ReadFunc = rt("ReadJSONNumberBytes")
 				tmplName = "decodeCaseBasic"
 			case "cbor":
 				if t.Sel.Name == "Raw" || t.Sel.Name == "Number" {
@@ -938,46 +1021,46 @@ func decodeCaseExprSafe(structName, goName string, typ ast.Expr) (string, bool) 
 			switch ident.Name {
 			case "string":
 				data.VarType = "string"
-				data.ReadFunc = "ReadStringBytes"
+				data.ReadFunc = rt("ReadStringBytes")
 			case "bool":
 				data.VarType = "bool"
-				data.ReadFunc = "ReadBoolBytes"
+				data.ReadFunc = rt("ReadBoolBytes")
 			case "int":
 				data.VarType = "int"
-				data.ReadFunc = "ReadIntBytes"
+				data.ReadFunc = rt("ReadIntBytes")
 			case "int64":
 				data.VarType = "int64"
-				data.ReadFunc = "ReadInt64Bytes"
+				data.ReadFunc = rt("ReadInt64Bytes")
 			case "int32", "rune":
 				data.VarType = "int32"
-				data.ReadFunc = "ReadInt32Bytes"
+				data.ReadFunc = rt("ReadInt32Bytes")
 			case "int16":
 				data.VarType = "int16"
-				data.ReadFunc = "ReadInt16Bytes"
+				data.ReadFunc = rt("ReadInt16Bytes")
 			case "int8":
 				data.VarType = "int8"
-				data.ReadFunc = "ReadInt8Bytes"
+				data.ReadFunc = rt("ReadInt8Bytes")
 			case "uint":
 				data.VarType = "uint"
-				data.ReadFunc = "ReadUintBytes"
+				data.ReadFunc = rt("ReadUintBytes")
 			case "uint64":
 				data.VarType = "uint64"
-				data.ReadFunc = "ReadUint64Bytes"
+				data.ReadFunc = rt("ReadUint64Bytes")
 			case "uint32":
 				data.VarType = "uint32"
-				data.ReadFunc = "ReadUint32Bytes"
+				data.ReadFunc = rt("ReadUint32Bytes")
 			case "uint16":
 				data.VarType = "uint16"
-				data.ReadFunc = "ReadUint16Bytes"
+				data.ReadFunc = rt("ReadUint16Bytes")
 			case "uint8", "byte":
 				data.VarType = "uint8"
-				data.ReadFunc = "ReadUint8Bytes"
+				data.ReadFunc = rt("ReadUint8Bytes")
 			case "float32":
 				data.VarType = "float32"
-				data.ReadFunc = "ReadFloat32Bytes"
+				data.ReadFunc = rt("ReadFloat32Bytes")
 			case "float64":
 				data.VarType = "float64"
-				data.ReadFunc = "ReadFloat64Bytes"
+				data.ReadFunc = rt("ReadFloat64Bytes")
 			default:
 				data.VarType = ident.Name
 				tmplName = "decodeCaseSliceStruct"
@@ -997,93 +1080,93 @@ func decodeCaseExprSafe(structName, goName string, typ ast.Expr) (string, bool) 
 		}
 		return "", false
 	case *ast.MapType:
-			// map[K]T containers
-			keyIdent, okKey := t.Key.(*ast.Ident)
-			if !okKey {
-				return "", false
-			}
-			// Numeric-key maps we know how to handle: map[uint64]*T, map[uint64]uint64
-			if keyIdent.Name == "uint64" {
-				if star, okVal := t.Value.(*ast.StarExpr); okVal {
-					if ident, ok2 := star.X.(*ast.Ident); ok2 {
-						data.VarType = ident.Name
-						tmplName = "decodeCaseMapUint64Ptr"
-						break
-					}
-				}
-				if valIdent, okVal := t.Value.(*ast.Ident); okVal && valIdent.Name == "uint64" {
-					tmplName = "decodeCaseMapUint64Uint64"
-					break
-				}
-				return "", false
-			}
-			// map[string]T containers
-			if keyIdent.Name != "string" {
-				return "", false
-			}
-			// map[string]scalar via template, or map[string]struct via dedicated template
-			if valIdent, okVal := t.Value.(*ast.Ident); okVal {
-				switch valIdent.Name {
-				case "string":
-					data.VarType = "string"
-					data.ReadFunc = "ReadStringBytes"
-				case "bool":
-					data.VarType = "bool"
-					data.ReadFunc = "ReadBoolBytes"
-				case "int":
-					data.VarType = "int"
-					data.ReadFunc = "ReadIntBytes"
-				case "int64":
-					data.VarType = "int64"
-					data.ReadFunc = "ReadInt64Bytes"
-				case "int32", "rune":
-					data.VarType = "int32"
-					data.ReadFunc = "ReadInt32Bytes"
-				case "int16":
-					data.VarType = "int16"
-					data.ReadFunc = "ReadInt16Bytes"
-				case "int8":
-					data.VarType = "int8"
-					data.ReadFunc = "ReadInt8Bytes"
-				case "uint":
-					data.VarType = "uint"
-					data.ReadFunc = "ReadUintBytes"
-				case "uint64":
-					data.VarType = "uint64"
-					data.ReadFunc = "ReadUint64Bytes"
-				case "uint32":
-					data.VarType = "uint32"
-					data.ReadFunc = "ReadUint32Bytes"
-				case "uint16":
-					data.VarType = "uint16"
-					data.ReadFunc = "ReadUint16Bytes"
-				case "uint8", "byte":
-					data.VarType = "uint8"
-					data.ReadFunc = "ReadUint8Bytes"
-				case "float32":
-					data.VarType = "float32"
-					data.ReadFunc = "ReadFloat32Bytes"
-				case "float64":
-					data.VarType = "float64"
-					data.ReadFunc = "ReadFloat64Bytes"
-				default:
-					data.VarType = valIdent.Name
-					tmplName = "decodeCaseMapStrStruct"
-				}
-				if tmplName == "" {
-					tmplName = "decodeCaseMapStrBasic"
-				}
-				break
-			}
-			// map[string]*T where T has UnmarshalCBOR
+		// map[K]T containers
+		keyIdent, okKey := t.Key.(*ast.Ident)
+		if !okKey {
+			return "", false
+		}
+		// Numeric-key maps we know how to handle: map[uint64]*T, map[uint64]uint64
+		if keyIdent.Name == "uint64" {
 			if star, okVal := t.Value.(*ast.StarExpr); okVal {
 				if ident, ok2 := star.X.(*ast.Ident); ok2 {
 					data.VarType = ident.Name
-					tmplName = "decodeCaseMapStrPtrStruct"
+					tmplName = "decodeCaseMapUint64Ptr"
 					break
 				}
 			}
+			if valIdent, okVal := t.Value.(*ast.Ident); okVal && valIdent.Name == "uint64" {
+				tmplName = "decodeCaseMapUint64Uint64"
+				break
+			}
 			return "", false
+		}
+		// map[string]T containers
+		if keyIdent.Name != "string" {
+			return "", false
+		}
+		// map[string]scalar via template, or map[string]struct via dedicated template
+		if valIdent, okVal := t.Value.(*ast.Ident); okVal {
+			switch valIdent.Name {
+			case "string":
+				data.VarType = "string"
+				data.ReadFunc = rt("ReadStringBytes")
+			case "bool":
+				data.VarType = "bool"
+				data.ReadFunc = rt("ReadBoolBytes")
+			case "int":
+				data.VarType = "int"
+				data.ReadFunc = rt("ReadIntBytes")
+			case "int64":
+				data.VarType = "int64"
+				data.ReadFunc = rt("ReadInt64Bytes")
+			case "int32", "rune":
+				data.VarType = "int32"
+				data.ReadFunc = rt("ReadInt32Bytes")
+			case "int16":
+				data.VarType = "int16"
+				data.ReadFunc = rt("ReadInt16Bytes")
+			case "int8":
+				data.VarType = "int8"
+				data.ReadFunc = rt("ReadInt8Bytes")
+			case "uint":
+				data.VarType = "uint"
+				data.ReadFunc = rt("ReadUintBytes")
+			case "uint64":
+				data.VarType = "uint64"
+				data.ReadFunc = rt("ReadUint64Bytes")
+			case "uint32":
+				data.VarType = "uint32"
+				data.ReadFunc = rt("ReadUint32Bytes")
+			case "uint16":
+				data.VarType = "uint16"
+				data.ReadFunc = rt("ReadUint16Bytes")
+			case "uint8", "byte":
+				data.VarType = "uint8"
+				data.ReadFunc = rt("ReadUint8Bytes")
+			case "float32":
+				data.VarType = "float32"
+				data.ReadFunc = rt("ReadFloat32Bytes")
+			case "float64":
+				data.VarType = "float64"
+				data.ReadFunc = rt("ReadFloat64Bytes")
+			default:
+				data.VarType = valIdent.Name
+				tmplName = "decodeCaseMapStrStruct"
+			}
+			if tmplName == "" {
+				tmplName = "decodeCaseMapStrBasic"
+			}
+			break
+		}
+		// map[string]*T where T has UnmarshalCBOR
+		if star, okVal := t.Value.(*ast.StarExpr); okVal {
+			if ident, ok2 := star.X.(*ast.Ident); ok2 {
+				data.VarType = ident.Name
+				tmplName = "decodeCaseMapStrPtrStruct"
+				break
+			}
+		}
+		return "", false
 	case *ast.StarExpr:
 		// Pointer to user-defined type with UnmarshalCBOR.
 		if ident, ok := t.X.(*ast.Ident); ok {
@@ -1113,6 +1196,7 @@ func decodeCaseExprSafe(structName, goName string, typ ast.Expr) (string, bool) 
 func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, bool) {
 	data := decodeCaseTemplateData{Field: goName}
 	tmplName := ""
+	rt := runtimeName
 
 	switch t := typ.(type) {
 	case *ast.MapType:
@@ -1137,78 +1221,78 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 			break
 		}
 
-			// map[string]T containers for scalar or struct T (Trusted path)
-			if keyIdent.Name != "string" {
-				return "", false
-			}
-			if valIdent, okVal := t.Value.(*ast.Ident); okVal {
-				switch valIdent.Name {
+		// map[string]T containers for scalar or struct T (Trusted path)
+		if keyIdent.Name != "string" {
+			return "", false
+		}
+		if valIdent, okVal := t.Value.(*ast.Ident); okVal {
+			switch valIdent.Name {
 			case "string":
 				data.VarType = "string"
-				data.ReadFunc = "ReadStringBytes"
+				data.ReadFunc = rt("ReadStringBytes")
 			case "bool":
 				data.VarType = "bool"
-				data.ReadFunc = "ReadBoolBytes"
+				data.ReadFunc = rt("ReadBoolBytes")
 			case "int":
 				data.VarType = "int"
-				data.ReadFunc = "ReadIntBytes"
+				data.ReadFunc = rt("ReadIntBytes")
 			case "int64":
 				data.VarType = "int64"
-				data.ReadFunc = "ReadInt64Bytes"
+				data.ReadFunc = rt("ReadInt64Bytes")
 			case "int32", "rune":
 				data.VarType = "int32"
-				data.ReadFunc = "ReadInt32Bytes"
+				data.ReadFunc = rt("ReadInt32Bytes")
 			case "int16":
 				data.VarType = "int16"
-				data.ReadFunc = "ReadInt16Bytes"
+				data.ReadFunc = rt("ReadInt16Bytes")
 			case "int8":
 				data.VarType = "int8"
-				data.ReadFunc = "ReadInt8Bytes"
+				data.ReadFunc = rt("ReadInt8Bytes")
 			case "uint":
 				data.VarType = "uint"
-				data.ReadFunc = "ReadUintBytes"
+				data.ReadFunc = rt("ReadUintBytes")
 			case "uint64":
 				data.VarType = "uint64"
-				data.ReadFunc = "ReadUint64Bytes"
+				data.ReadFunc = rt("ReadUint64Bytes")
 			case "uint32":
 				data.VarType = "uint32"
-				data.ReadFunc = "ReadUint32Bytes"
+				data.ReadFunc = rt("ReadUint32Bytes")
 			case "uint16":
 				data.VarType = "uint16"
-				data.ReadFunc = "ReadUint16Bytes"
+				data.ReadFunc = rt("ReadUint16Bytes")
 			case "uint8", "byte":
 				data.VarType = "uint8"
-				data.ReadFunc = "ReadUint8Bytes"
+				data.ReadFunc = rt("ReadUint8Bytes")
 			case "float32":
 				data.VarType = "float32"
-				data.ReadFunc = "ReadFloat32Bytes"
-				case "float64":
-					data.VarType = "float64"
-					data.ReadFunc = "ReadFloat64Bytes"
-				default:
-					data.VarType = valIdent.Name
-					if _, ok := generatedStructs[valIdent.Name]; ok {
-						tmplName = "decodeCaseMapStrStructTrusted"
-					} else {
-						tmplName = "decodeCaseMapStrStruct"
-					}
-				}
-				if tmplName == "" {
-					tmplName = "decodeCaseMapStrBasic"
-				}
-			break
-		}
-			if star, okVal := t.Value.(*ast.StarExpr); okVal {
-				if ident, ok2 := star.X.(*ast.Ident); ok2 {
-					data.VarType = ident.Name
-					if _, ok := generatedStructs[ident.Name]; ok {
-						tmplName = "decodeCaseMapStrPtrStructTrusted"
-					} else if tmplName == "" {
-						tmplName = "decodeCaseMapStrPtrStruct"
-					}
-					break
+				data.ReadFunc = rt("ReadFloat32Bytes")
+			case "float64":
+				data.VarType = "float64"
+				data.ReadFunc = rt("ReadFloat64Bytes")
+			default:
+				data.VarType = valIdent.Name
+				if _, ok := generatedStructs[valIdent.Name]; ok {
+					tmplName = "decodeCaseMapStrStructTrusted"
+				} else {
+					tmplName = "decodeCaseMapStrStruct"
 				}
 			}
+			if tmplName == "" {
+				tmplName = "decodeCaseMapStrBasic"
+			}
+			break
+		}
+		if star, okVal := t.Value.(*ast.StarExpr); okVal {
+			if ident, ok2 := star.X.(*ast.Ident); ok2 {
+				data.VarType = ident.Name
+				if _, ok := generatedStructs[ident.Name]; ok {
+					tmplName = "decodeCaseMapStrPtrStructTrusted"
+				} else if tmplName == "" {
+					tmplName = "decodeCaseMapStrPtrStruct"
+				}
+				break
+			}
+		}
 		return "", false
 
 	case *ast.Ident:
@@ -1218,43 +1302,43 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 			tmplName = "decodeCaseStringTrusted"
 		case "bool":
 			data.VarType = "bool"
-			data.ReadFunc = "ReadBoolBytes"
+			data.ReadFunc = rt("ReadBoolBytes")
 		case "int":
 			data.VarType = "int"
-			data.ReadFunc = "ReadIntBytes"
+			data.ReadFunc = rt("ReadIntBytes")
 		case "int64":
 			data.VarType = "int64"
-			data.ReadFunc = "ReadInt64Bytes"
+			data.ReadFunc = rt("ReadInt64Bytes")
 		case "int32", "rune":
 			data.VarType = "int32"
-			data.ReadFunc = "ReadInt32Bytes"
+			data.ReadFunc = rt("ReadInt32Bytes")
 		case "int16":
 			data.VarType = "int16"
-			data.ReadFunc = "ReadInt16Bytes"
+			data.ReadFunc = rt("ReadInt16Bytes")
 		case "int8":
 			data.VarType = "int8"
-			data.ReadFunc = "ReadInt8Bytes"
+			data.ReadFunc = rt("ReadInt8Bytes")
 		case "uint":
 			data.VarType = "uint"
-			data.ReadFunc = "ReadUintBytes"
+			data.ReadFunc = rt("ReadUintBytes")
 		case "uint64":
 			data.VarType = "uint64"
-			data.ReadFunc = "ReadUint64Bytes"
+			data.ReadFunc = rt("ReadUint64Bytes")
 		case "uint32":
 			data.VarType = "uint32"
-			data.ReadFunc = "ReadUint32Bytes"
+			data.ReadFunc = rt("ReadUint32Bytes")
 		case "uint16":
 			data.VarType = "uint16"
-			data.ReadFunc = "ReadUint16Bytes"
+			data.ReadFunc = rt("ReadUint16Bytes")
 		case "uint8", "byte":
 			data.VarType = "uint8"
-			data.ReadFunc = "ReadUint8Bytes"
+			data.ReadFunc = rt("ReadUint8Bytes")
 		case "float32":
 			data.VarType = "float32"
-			data.ReadFunc = "ReadFloat32Bytes"
+			data.ReadFunc = rt("ReadFloat32Bytes")
 		case "float64":
 			data.VarType = "float64"
-			data.ReadFunc = "ReadFloat64Bytes"
+			data.ReadFunc = rt("ReadFloat64Bytes")
 		default:
 			// Fallback: user-defined type. If it's a struct we
 			// generated code for, prefer DecodeTrusted. Otherwise,
@@ -1276,10 +1360,10 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 				switch t.Sel.Name {
 				case "Time":
 					data.VarType = "time.Time"
-					data.ReadFunc = "ReadTimeBytes"
+					data.ReadFunc = rt("ReadTimeBytes")
 				case "Duration":
 					data.VarType = "time.Duration"
-					data.ReadFunc = "ReadDurationBytes"
+					data.ReadFunc = rt("ReadDurationBytes")
 				default:
 					return "", false
 				}
@@ -1291,7 +1375,7 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 					return "", false
 				}
 				data.VarType = "json.Number"
-				data.ReadFunc = "ReadJSONNumberBytes"
+				data.ReadFunc = rt("ReadJSONNumberBytes")
 				if tmplName == "" {
 					tmplName = "decodeCaseBasic"
 				}
@@ -1309,85 +1393,85 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 		} else {
 			return "", false
 		}
-		case *ast.ArrayType:
-			// []T containers (Trusted path uses same scalar readers
-			// but prefers DecodeTrusted for generated struct types).
-			if t.Len != nil {
-				return "", false
-			}
+	case *ast.ArrayType:
+		// []T containers (Trusted path uses same scalar readers
+		// but prefers DecodeTrusted for generated struct types).
+		if t.Len != nil {
+			return "", false
+		}
 		if ident, ok := t.Elt.(*ast.Ident); ok && ident.Name == "byte" {
 			tmplName = "decodeCaseBytes"
 			break
 		}
-			if ident, ok := t.Elt.(*ast.Ident); ok {
-				switch ident.Name {
+		if ident, ok := t.Elt.(*ast.Ident); ok {
+			switch ident.Name {
 			case "string":
 				data.VarType = "string"
-				data.ReadFunc = "ReadStringBytes"
+				data.ReadFunc = rt("ReadStringBytes")
 			case "bool":
 				data.VarType = "bool"
-				data.ReadFunc = "ReadBoolBytes"
+				data.ReadFunc = rt("ReadBoolBytes")
 			case "int":
 				data.VarType = "int"
-				data.ReadFunc = "ReadIntBytes"
+				data.ReadFunc = rt("ReadIntBytes")
 			case "int64":
 				data.VarType = "int64"
-				data.ReadFunc = "ReadInt64Bytes"
+				data.ReadFunc = rt("ReadInt64Bytes")
 			case "int32", "rune":
 				data.VarType = "int32"
-				data.ReadFunc = "ReadInt32Bytes"
+				data.ReadFunc = rt("ReadInt32Bytes")
 			case "int16":
 				data.VarType = "int16"
-				data.ReadFunc = "ReadInt16Bytes"
+				data.ReadFunc = rt("ReadInt16Bytes")
 			case "int8":
 				data.VarType = "int8"
-				data.ReadFunc = "ReadInt8Bytes"
+				data.ReadFunc = rt("ReadInt8Bytes")
 			case "uint":
 				data.VarType = "uint"
-				data.ReadFunc = "ReadUintBytes"
+				data.ReadFunc = rt("ReadUintBytes")
 			case "uint64":
 				data.VarType = "uint64"
-				data.ReadFunc = "ReadUint64Bytes"
+				data.ReadFunc = rt("ReadUint64Bytes")
 			case "uint32":
 				data.VarType = "uint32"
-				data.ReadFunc = "ReadUint32Bytes"
+				data.ReadFunc = rt("ReadUint32Bytes")
 			case "uint16":
 				data.VarType = "uint16"
-				data.ReadFunc = "ReadUint16Bytes"
+				data.ReadFunc = rt("ReadUint16Bytes")
 			case "uint8", "byte":
 				data.VarType = "uint8"
-				data.ReadFunc = "ReadUint8Bytes"
+				data.ReadFunc = rt("ReadUint8Bytes")
 			case "float32":
 				data.VarType = "float32"
-				data.ReadFunc = "ReadFloat32Bytes"
-				case "float64":
-					data.VarType = "float64"
-					data.ReadFunc = "ReadFloat64Bytes"
-				default:
-					data.VarType = ident.Name
-					if _, ok := generatedStructs[ident.Name]; ok {
-						tmplName = "decodeCaseSliceStructTrusted"
-					} else {
-						tmplName = "decodeCaseSliceStruct"
-					}
+				data.ReadFunc = rt("ReadFloat32Bytes")
+			case "float64":
+				data.VarType = "float64"
+				data.ReadFunc = rt("ReadFloat64Bytes")
+			default:
+				data.VarType = ident.Name
+				if _, ok := generatedStructs[ident.Name]; ok {
+					tmplName = "decodeCaseSliceStructTrusted"
+				} else {
+					tmplName = "decodeCaseSliceStruct"
 				}
-				if tmplName == "" {
-					tmplName = "decodeCaseSliceBasic"
+			}
+			if tmplName == "" {
+				tmplName = "decodeCaseSliceBasic"
+			}
+			break
+		}
+		if star, ok := t.Elt.(*ast.StarExpr); ok {
+			if ident, ok2 := star.X.(*ast.Ident); ok2 {
+				data.VarType = ident.Name
+				if _, ok := generatedStructs[ident.Name]; ok {
+					tmplName = "decodeCaseSlicePtrStructTrusted"
+				} else {
+					tmplName = "decodeCaseSlicePtrStruct"
 				}
 				break
 			}
-			if star, ok := t.Elt.(*ast.StarExpr); ok {
-				if ident, ok2 := star.X.(*ast.Ident); ok2 {
-					data.VarType = ident.Name
-					if _, ok := generatedStructs[ident.Name]; ok {
-						tmplName = "decodeCaseSlicePtrStructTrusted"
-					} else {
-						tmplName = "decodeCaseSlicePtrStruct"
-					}
-					break
-				}
-			}
-			return "", false
+		}
+		return "", false
 	case *ast.StarExpr:
 		// Pointer to user-defined type. If the underlying type is a
 		// generated struct, prefer DecodeTrusted; otherwise fall back
@@ -1422,13 +1506,14 @@ func decodeCaseExprTrusted(structName, goName string, typ ast.Expr) (string, boo
 //
 // ParseFS returns templates named by their filenames; we parse the
 // marshal.gotmpl file and then execute that template directly.
-var marshalTemplate = template.Must(template.ParseFS(tmplfs.FS, "marshal.gotmpl"))
+var marshalTemplate = template.Must(template.New("marshal.gotmpl").Funcs(templateFuncs).ParseFS(tmplfs.FS, "marshal.gotmpl"))
 
 // encodeExprForField returns a concrete encode expression for a field
 // where we want to avoid the generic AppendInterface path. It returns an
 // empty string when the generic path should be used.
 func encodeExprForField(goName string, typ ast.Expr) string {
 	field := "x." + goName
+	rt := runtimeName
 
 	switch t := typ.(type) {
 	case *ast.Ident:
@@ -1436,33 +1521,33 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 		// avoid the overhead of AppendInterface in hot paths.
 		switch t.Name {
 		case "string":
-			return "AppendString(b, " + field + "), nil"
+			return rt("AppendString") + "(b, " + field + "), nil"
 		case "bool":
-			return "AppendBool(b, " + field + "), nil"
+			return rt("AppendBool") + "(b, " + field + "), nil"
 		case "int":
-			return "AppendInt(b, " + field + "), nil"
+			return rt("AppendInt") + "(b, " + field + "), nil"
 		case "int8":
-			return "AppendInt8(b, " + field + "), nil"
+			return rt("AppendInt8") + "(b, " + field + "), nil"
 		case "int16":
-			return "AppendInt16(b, " + field + "), nil"
+			return rt("AppendInt16") + "(b, " + field + "), nil"
 		case "int32", "rune":
-			return "AppendInt32(b, " + field + "), nil"
+			return rt("AppendInt32") + "(b, " + field + "), nil"
 		case "int64":
-			return "AppendInt64(b, " + field + "), nil"
+			return rt("AppendInt64") + "(b, " + field + "), nil"
 		case "uint":
-			return "AppendUint(b, " + field + "), nil"
+			return rt("AppendUint") + "(b, " + field + "), nil"
 		case "uint8", "byte":
-			return "AppendUint8(b, " + field + "), nil"
+			return rt("AppendUint8") + "(b, " + field + "), nil"
 		case "uint16":
-			return "AppendUint16(b, " + field + "), nil"
+			return rt("AppendUint16") + "(b, " + field + "), nil"
 		case "uint32":
-			return "AppendUint32(b, " + field + "), nil"
+			return rt("AppendUint32") + "(b, " + field + "), nil"
 		case "uint64":
-			return "AppendUint64(b, " + field + "), nil"
+			return rt("AppendUint64") + "(b, " + field + "), nil"
 		case "float32":
-			return "AppendFloat32(b, " + field + "), nil"
+			return rt("AppendFloat32") + "(b, " + field + "), nil"
 		case "float64":
-			return "AppendFloat64(b, " + field + "), nil"
+			return rt("AppendFloat64") + "(b, " + field + "), nil"
 		}
 		// For non-primitive identifiers, assume a struct type with
 		// a generated or user-defined MarshalCBOR method.
@@ -1475,7 +1560,7 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 			return ""
 		}
 		if ident, ok := t.Elt.(*ast.Ident); ok && ident.Name == "string" {
-			return "AppendStringSlice(b, " + field + "), nil"
+			return rt("AppendStringSlice") + "(b, " + field + "), nil"
 		}
 
 	case *ast.MapType:
@@ -1488,14 +1573,14 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 		}
 		if keyIdent.Name == "string" {
 			if valIdent, okVal := t.Value.(*ast.Ident); okVal && valIdent.Name == "string" {
-				return "AppendMapStrStr(b, " + field + "), nil"
+				return rt("AppendMapStrStr") + "(b, " + field + "), nil"
 			}
 		}
 
 	case *ast.StarExpr:
 		// *T where T is exported; assume *T implements Marshaler.
 		if ident, ok := t.X.(*ast.Ident); ok && ast.IsExported(ident.Name) {
-			return "AppendPtrMarshaler(b, " + field + ")"
+			return rt("AppendPtrMarshaler") + "(b, " + field + ")"
 		}
 
 	case *ast.SelectorExpr:
@@ -1506,13 +1591,13 @@ func encodeExprForField(goName string, typ ast.Expr) string {
 			case "time":
 				switch t.Sel.Name {
 				case "Time":
-					return "AppendTime(b, " + field + "), nil"
+					return rt("AppendTime") + "(b, " + field + "), nil"
 				case "Duration":
-					return "AppendDuration(b, " + field + "), nil"
+					return rt("AppendDuration") + "(b, " + field + "), nil"
 				}
 			case "json":
 				if t.Sel.Name == "RawMessage" {
-					return "AppendBytes(b, []byte(" + field + ")), nil"
+					return rt("AppendBytes") + "(b, []byte(" + field + ")), nil"
 				}
 			}
 		}
