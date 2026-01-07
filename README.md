@@ -144,21 +144,20 @@ Internally, the generator builds on the core `cbor` runtime and emits:
   decoders for your types.
 - Encode paths that avoid reflection and dynamic dispatch in hot paths.
 
-### Amalgamated runtime (no external import)
+### Runtime dependency (direct import)
 
-When `cborgen` runs, it also materializes a `cbor_runtime.go` file next to the
-generated `*_cbor.go` files in your package. This file contains the CBOR
-runtime helpers (append/read functions, JSON interop helpers, etc.) rewritten
-to use your package name.
+`cborgen` now emits code that imports the runtime helpers directly from
+`github.com/delaneyj/cbor/runtime` (aliased as `cbor`). The generated files no
+longer materialize a `cbor_runtime.go` copy alongside your types.
 
 As a result, the generated code:
 
-- Does **not** import `github.com/delaneyj/cbor/runtime`.
-- Depends only on the Go standard library at runtime.
+- Imports `github.com/delaneyj/cbor/runtime`.
+- Requires the module dependency at build/runtime (not just the standard
+  library).
 
-You only need to import `github.com/delaneyj/cbor` yourself if you want to use
-the standalone `runtime` package directly (for example from a different
-module), or if you want to run the `cborgen` tool via `go run` / `go install`.
+You still need `github.com/delaneyj/cbor` in your module if you want to use the
+standalone `runtime` package or the `cborgen` tool via `go run` / `go install`.
 
 ---
 

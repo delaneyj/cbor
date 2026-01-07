@@ -20,28 +20,7 @@ func (x *Scalars) MarshalCBOR(b []byte) ([]byte, error) {
 
 	b = cbor.Require(b, x.Msgsize())
 
-	count := uint32(0)
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	count++
-	b = cbor.AppendMapHeader(b, count)
+	b = cbor.AppendMapHeader(b, uint32(20))
 	var err error
 	b = cbor.AppendString(b, "s")
 	b, err = cbor.AppendString(b, x.S), nil
@@ -298,6 +277,9 @@ func (x *Scalars) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Ints = make([]int, sz)
 			}
+			if sz > 0 {
+				_ = x.Ints[sz-1]
+			}
 			for iInts := uint32(0); iInts < sz; iInts++ {
 				var tmp int
 				tmp, v, err = cbor.ReadIntBytes(v)
@@ -318,6 +300,9 @@ func (x *Scalars) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Names = make([]string, sz)
 			}
+			if sz > 0 {
+				_ = x.Names[sz-1]
+			}
 			for iNames := uint32(0); iNames < sz; iNames++ {
 				var tmp string
 				tmp, v, err = cbor.ReadStringBytes(v)
@@ -336,9 +321,7 @@ func (x *Scalars) DecodeSafe(b []byte) ([]byte, error) {
 			if x.Scores == nil && sz > 0 {
 				x.Scores = make(map[string]int, sz)
 			} else if x.Scores != nil {
-				for k := range x.Scores {
-					delete(x.Scores, k)
-				}
+				clear(x.Scores)
 			}
 			for iScores := uint32(0); iScores < sz; iScores++ {
 				var key string
@@ -528,6 +511,9 @@ func (x *Scalars) DecodeTrusted(b []byte) ([]byte, error) {
 			} else {
 				x.Ints = make([]int, sz)
 			}
+			if sz > 0 {
+				_ = x.Ints[sz-1]
+			}
 			for iInts := uint32(0); iInts < sz; iInts++ {
 				var tmp int
 				tmp, v, err = cbor.ReadIntBytes(v)
@@ -548,6 +534,9 @@ func (x *Scalars) DecodeTrusted(b []byte) ([]byte, error) {
 			} else {
 				x.Names = make([]string, sz)
 			}
+			if sz > 0 {
+				_ = x.Names[sz-1]
+			}
 			for iNames := uint32(0); iNames < sz; iNames++ {
 				var tmp string
 				tmp, v, err = cbor.ReadStringBytes(v)
@@ -566,9 +555,7 @@ func (x *Scalars) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Scores == nil && sz > 0 {
 				x.Scores = make(map[string]int, sz)
 			} else if x.Scores != nil {
-				for k := range x.Scores {
-					delete(x.Scores, k)
-				}
+				clear(x.Scores)
 			}
 			for iScores := uint32(0); iScores < sz; iScores++ {
 				var key string
@@ -731,7 +718,7 @@ func (x *Nested) DecodeTrusted(b []byte) ([]byte, error) {
 			x.ID = cbor.UnsafeString(tmpBytes)
 		case "base":
 
-			v, err = x.Base.UnmarshalCBOR(v)
+			v, err = (&x.Base).DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}
@@ -740,7 +727,7 @@ func (x *Nested) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Ptr == nil {
 				x.Ptr = new(Scalars)
 			}
-			v, err = x.Ptr.UnmarshalCBOR(v)
+			v, err = x.Ptr.DecodeTrusted(v)
 			if err != nil {
 				return b, err
 			}

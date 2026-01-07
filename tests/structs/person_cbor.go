@@ -2,17 +2,19 @@
 
 package structs
 
+import cbor "github.com/delaneyj/cbor/runtime"
+
 func (x Person) Msgsize() (s int) {
-	s = MapHeaderSize + StringPrefixSize + len("name") + StringPrefixSize + len(x.Name) + StringPrefixSize + len("age") + IntSize + StringPrefixSize + len("data") + BytesPrefixSize + len(x.Data)
+	s = cbor.MapHeaderSize + cbor.StringPrefixSize + len("name") + cbor.StringPrefixSize + len(x.Name) + cbor.StringPrefixSize + len("age") + cbor.IntSize + cbor.StringPrefixSize + len("data") + cbor.BytesPrefixSize + len(x.Data)
 	return
 }
 
 func (x *Person) MarshalCBOR(b []byte) ([]byte, error) {
 	if x == nil {
-		return AppendNil(b), nil
+		return cbor.AppendNil(b), nil
 	}
 
-	b = Require(b, x.Msgsize())
+	b = cbor.Require(b, x.Msgsize())
 
 	count := uint32(0)
 	count++
@@ -20,22 +22,22 @@ func (x *Person) MarshalCBOR(b []byte) ([]byte, error) {
 		count++
 	}
 	count++
-	b = AppendMapHeader(b, count)
+	b = cbor.AppendMapHeader(b, count)
 	var err error
-	b = AppendString(b, "name")
-	b, err = AppendString(b, x.Name), nil
+	b = cbor.AppendString(b, "name")
+	b, err = cbor.AppendString(b, x.Name), nil
 	if err != nil {
 		return b, err
 	}
 	if !(x.Age == 0) {
-		b = AppendString(b, "age")
-		b, err = AppendInt(b, x.Age), nil
+		b = cbor.AppendString(b, "age")
+		b, err = cbor.AppendInt(b, x.Age), nil
 		if err != nil {
 			return b, err
 		}
 	}
-	b = AppendString(b, "data")
-	b, err = AppendInterface(b, x.Data)
+	b = cbor.AppendString(b, "data")
+	b, err = cbor.AppendInterface(b, x.Data)
 	if err != nil {
 		return b, err
 	}
@@ -46,14 +48,14 @@ func (x *Person) MarshalCBOR(b []byte) ([]byte, error) {
 // DecodeSafe decodes using validated, allocating string handling.
 func (x *Person) DecodeSafe(b []byte) ([]byte, error) {
 	if x == nil {
-		return b, ErrNotNil
+		return b, cbor.ErrNotNil
 	}
-	sz, rest, err := ReadMapHeaderBytes(b)
+	sz, rest, err := cbor.ReadMapHeaderBytes(b)
 	if err != nil {
 		return b, err
 	}
 	for i := uint32(0); i < sz; i++ {
-		key, v, err := ReadStringBytes(rest)
+		key, v, err := cbor.ReadStringBytes(rest)
 		if err != nil {
 			return b, err
 		}
@@ -61,7 +63,7 @@ func (x *Person) DecodeSafe(b []byte) ([]byte, error) {
 		case "name":
 
 			var tmp string
-			tmp, v, err = ReadStringBytes(v)
+			tmp, v, err = cbor.ReadStringBytes(v)
 			if err != nil {
 				return b, err
 			}
@@ -69,7 +71,7 @@ func (x *Person) DecodeSafe(b []byte) ([]byte, error) {
 		case "age":
 
 			var tmp int
-			tmp, v, err = ReadIntBytes(v)
+			tmp, v, err = cbor.ReadIntBytes(v)
 			if err != nil {
 				return b, err
 			}
@@ -77,13 +79,13 @@ func (x *Person) DecodeSafe(b []byte) ([]byte, error) {
 		case "data":
 
 			var tmp []byte
-			tmp, v, err = ReadBytesBytes(v, nil)
+			tmp, v, err = cbor.ReadBytesBytes(v, nil)
 			if err != nil {
 				return b, err
 			}
 			x.Data = tmp
 		default:
-			v, err = Skip(v)
+			v, err = cbor.Skip(v)
 			if err != nil {
 				return b, err
 			}
@@ -96,31 +98,31 @@ func (x *Person) DecodeSafe(b []byte) ([]byte, error) {
 // DecodeTrusted decodes using zero-copy strings and no per-string UTF-8 validation.
 func (x *Person) DecodeTrusted(b []byte) ([]byte, error) {
 	if x == nil {
-		return b, ErrNotNil
+		return b, cbor.ErrNotNil
 	}
-	sz, rest, err := ReadMapHeaderBytes(b)
+	sz, rest, err := cbor.ReadMapHeaderBytes(b)
 	if err != nil {
 		return b, err
 	}
 	for i := uint32(0); i < sz; i++ {
-		keyBytes, v, err := ReadStringZC(rest)
+		keyBytes, v, err := cbor.ReadStringZC(rest)
 		if err != nil {
 			return b, err
 		}
-		key := UnsafeString(keyBytes)
+		key := cbor.UnsafeString(keyBytes)
 		switch key {
 		case "name":
 
 			var tmpBytes []byte
-			tmpBytes, v, err = ReadStringZC(v)
+			tmpBytes, v, err = cbor.ReadStringZC(v)
 			if err != nil {
 				return b, err
 			}
-			x.Name = UnsafeString(tmpBytes)
+			x.Name = cbor.UnsafeString(tmpBytes)
 		case "age":
 
 			var tmp int
-			tmp, v, err = ReadIntBytes(v)
+			tmp, v, err = cbor.ReadIntBytes(v)
 			if err != nil {
 				return b, err
 			}
@@ -128,13 +130,13 @@ func (x *Person) DecodeTrusted(b []byte) ([]byte, error) {
 		case "data":
 
 			var tmp []byte
-			tmp, v, err = ReadBytesBytes(v, nil)
+			tmp, v, err = cbor.ReadBytesBytes(v, nil)
 			if err != nil {
 				return b, err
 			}
 			x.Data = tmp
 		default:
-			v, err = Skip(v)
+			v, err = cbor.Skip(v)
 			if err != nil {
 				return b, err
 			}

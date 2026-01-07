@@ -95,6 +95,9 @@ func (x *Containers) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Items = make([]Scalars, sz)
 			}
+			if sz > 0 {
+				_ = x.Items[sz-1]
+			}
 			for iItems := uint32(0); iItems < sz; iItems++ {
 				var tmp Scalars
 				v, err = (&tmp).UnmarshalCBOR(v)
@@ -115,6 +118,9 @@ func (x *Containers) DecodeSafe(b []byte) ([]byte, error) {
 			} else {
 				x.Ptrs = make([]*Scalars, sz)
 			}
+			if sz > 0 {
+				_ = x.Ptrs[sz-1]
+			}
 			for iPtrs := uint32(0); iPtrs < sz; iPtrs++ {
 				if x.Ptrs[iPtrs] == nil {
 					x.Ptrs[iPtrs] = new(Scalars)
@@ -134,9 +140,7 @@ func (x *Containers) DecodeSafe(b []byte) ([]byte, error) {
 			if x.Map == nil && sz > 0 {
 				x.Map = make(map[string]Scalars, sz)
 			} else if x.Map != nil {
-				for k := range x.Map {
-					delete(x.Map, k)
-				}
+				clear(x.Map)
 			}
 			for iMap := uint32(0); iMap < sz; iMap++ {
 				var key string
@@ -161,9 +165,7 @@ func (x *Containers) DecodeSafe(b []byte) ([]byte, error) {
 			if x.PtrMap == nil && sz > 0 {
 				x.PtrMap = make(map[string]*Scalars, sz)
 			} else if x.PtrMap != nil {
-				for k := range x.PtrMap {
-					delete(x.PtrMap, k)
-				}
+				clear(x.PtrMap)
 			}
 			for iPtrMap := uint32(0); iPtrMap < sz; iPtrMap++ {
 				var key string
@@ -217,6 +219,9 @@ func (x *Containers) DecodeTrusted(b []byte) ([]byte, error) {
 			} else {
 				x.Items = make([]Scalars, sz)
 			}
+			if sz > 0 {
+				_ = x.Items[sz-1]
+			}
 			for iItems := uint32(0); iItems < sz; iItems++ {
 				var tmp Scalars
 				v, err = (&tmp).UnmarshalCBOR(v)
@@ -237,6 +242,9 @@ func (x *Containers) DecodeTrusted(b []byte) ([]byte, error) {
 			} else {
 				x.Ptrs = make([]*Scalars, sz)
 			}
+			if sz > 0 {
+				_ = x.Ptrs[sz-1]
+			}
 			for iPtrs := uint32(0); iPtrs < sz; iPtrs++ {
 				if x.Ptrs[iPtrs] == nil {
 					x.Ptrs[iPtrs] = new(Scalars)
@@ -256,9 +264,7 @@ func (x *Containers) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.Map == nil && sz > 0 {
 				x.Map = make(map[string]Scalars, sz)
 			} else if x.Map != nil {
-				for k := range x.Map {
-					delete(x.Map, k)
-				}
+				clear(x.Map)
 			}
 			for iMap := uint32(0); iMap < sz; iMap++ {
 				var key string
@@ -283,9 +289,7 @@ func (x *Containers) DecodeTrusted(b []byte) ([]byte, error) {
 			if x.PtrMap == nil && sz > 0 {
 				x.PtrMap = make(map[string]*Scalars, sz)
 			} else if x.PtrMap != nil {
-				for k := range x.PtrMap {
-					delete(x.PtrMap, k)
-				}
+				clear(x.PtrMap)
 			}
 			for iPtrMap := uint32(0); iPtrMap < sz; iPtrMap++ {
 				var key string
