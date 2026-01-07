@@ -1,12 +1,12 @@
 package cbor
 
 import (
-    "encoding/binary"
-    "errors"
-    "math"
-    bigmath "math/big"
-    "regexp"
-    "time"
+	"encoding/binary"
+	"errors"
+	"math"
+	bigmath "math/big"
+	"regexp"
+	"time"
 )
 
 var be = binary.BigEndian
@@ -449,17 +449,83 @@ func ReadBytesBytes(b []byte, scratch []byte) (v []byte, o []byte, err error) {
 			p = q[sz:]
 		}
 	}
-	sz, o, err := readUintCore(b, majorTypeBytes)
-	if err != nil {
-		return nil, b, err
+	lead := b[0]
+	if lead >= 0x40 && lead <= 0x57 { // byte string length 0-23
+		sz := int(lead & 0x1f)
+		if len(b) < 1+sz {
+			return nil, b, ErrShortBytes
+		}
+		if sz == 0 {
+			return scratch[:0], b[1:], nil
+		}
+		return b[1 : 1+sz], b[1+sz:], nil
 	}
-	if uint64(len(o)) < sz {
-		return nil, b, ErrShortBytes
+	switch lead {
+	case 0x58: // uint8
+		if len(b) < 2 {
+			return nil, b, ErrShortBytes
+		}
+		sz := int(b[1])
+		if len(b) < 2+sz {
+			return nil, b, ErrShortBytes
+		}
+		if sz == 0 {
+			return scratch[:0], b[2:], nil
+		}
+		return b[2 : 2+sz], b[2+sz:], nil
+	case 0x59: // uint16
+		if len(b) < 3 {
+			return nil, b, ErrShortBytes
+		}
+		sz := int(be.Uint16(b[1:]))
+		if len(b) < 3+sz {
+			return nil, b, ErrShortBytes
+		}
+		if sz == 0 {
+			return scratch[:0], b[3:], nil
+		}
+		return b[3 : 3+sz], b[3+sz:], nil
+	case 0x5a: // uint32
+		if len(b) < 5 {
+			return nil, b, ErrShortBytes
+		}
+		sz := int(be.Uint32(b[1:]))
+		if len(b) < 5+sz {
+			return nil, b, ErrShortBytes
+		}
+		if sz == 0 {
+			return scratch[:0], b[5:], nil
+		}
+		return b[5 : 5+sz], b[5+sz:], nil
+	case 0x5b: // uint64
+		if len(b) < 9 {
+			return nil, b, ErrShortBytes
+		}
+		u64 := be.Uint64(b[1:])
+		if u64 > math.MaxInt {
+			return nil, b, UintOverflow{Value: u64, FailedBitsize: 64}
+		}
+		sz := int(u64)
+		if len(b) < 9+sz {
+			return nil, b, ErrShortBytes
+		}
+		if sz == 0 {
+			return scratch[:0], b[9:], nil
+		}
+		return b[9 : 9+sz], b[9+sz:], nil
+	default:
+		sz, o, err := readUintCore(b, majorTypeBytes)
+		if err != nil {
+			return nil, b, err
+		}
+		if uint64(len(o)) < sz {
+			return nil, b, ErrShortBytes
+		}
+		if sz == 0 {
+			return scratch[:0], o, nil
+		}
+		return o[:sz], o[sz:], nil
 	}
-	if sz == 0 {
-		return scratch[:0], o, nil
-	}
-	return o[:sz], o[sz:], nil
 }
 
 // ReadStringZC reads a text string zero-copy (returns slice into original buffer)
@@ -518,68 +584,70 @@ func ReadStringZC(b []byte) (v []byte, o []byte, err error) {
 		return nil, b, badPrefix(major, majorTypeText)
 	}
 
-    // Guard against integer overflow and out-of-bounds slicing.
-    // Use subtraction form to avoid start+sz overflow when sz is near MaxInt.
-    if start < 0 || start > len(b) {
-        return nil, b, ErrShortBytes
-    }
-    if sz < 0 || sz > len(b)-start {
-        return nil, b, ErrShortBytes
-    }
-    end := start + sz
-    return b[start:end], b[end:], nil
+	// Guard against integer overflow and out-of-bounds slicing.
+	// Use subtraction form to avoid start+sz overflow when sz is near MaxInt.
+	if start < 0 || start > len(b) {
+		return nil, b, ErrShortBytes
+	}
+	if sz < 0 || sz > len(b)-start {
+		return nil, b, ErrShortBytes
+	}
+	end := start + sz
+	return b[start:end], b[end:], nil
 }
 
 // ReadStringBytes reads a text string
 func ReadStringBytes(b []byte) (s string, o []byte, err error) {
-    if len(b) < 1 {
-        return "", b, ErrShortBytes
-    }
-    // Indefinite-length text string (0x7f)
-    if b[0] == makeByte(majorTypeText, addInfoIndefinite) {
-        p := b[1:]
-        var out []byte
-        for {
-            if len(p) < 1 {
-                return "", b, ErrShortBytes
-            }
-            if p[0] == makeByte(majorTypeSimple, simpleBreak) {
-                if ValidateUTF8OnDecode && !isUTF8Valid(out) {
-                    return "", b, ErrInvalidUTF8
-                }
-                return string(out), p[1:], nil
-            }
-            chunk, q, e := ReadStringZC(p)
-            if e != nil {
-                return "", b, e
-            }
-            out = append(out, chunk...)
-            p = q
-        }
-    }
-    v, o, err := ReadStringZC(b)
-    if err != nil {
-        return "", b, err
-    }
-    if ValidateUTF8OnDecode && !isUTF8Valid(v) {
-        return "", b, ErrInvalidUTF8
-    }
-    if UnsafeStringDecode {
-        return UnsafeString(v), o, nil
-    }
-    return string(v), o, nil
+	if len(b) < 1 {
+		return "", b, ErrShortBytes
+	}
+	// Indefinite-length text string (0x7f)
+	if b[0] == makeByte(majorTypeText, addInfoIndefinite) {
+		p := b[1:]
+		var out []byte
+		for {
+			if len(p) < 1 {
+				return "", b, ErrShortBytes
+			}
+			if p[0] == makeByte(majorTypeSimple, simpleBreak) {
+				if ValidateUTF8OnDecode && !isUTF8Valid(out) {
+					return "", b, ErrInvalidUTF8
+				}
+				return string(out), p[1:], nil
+			}
+			chunk, q, e := ReadStringZC(p)
+			if e != nil {
+				return "", b, e
+			}
+			out = append(out, chunk...)
+			p = q
+		}
+	}
+	v, o, err := ReadStringZC(b)
+	if err != nil {
+		return "", b, err
+	}
+	if ValidateUTF8OnDecode && !isUTF8Valid(v) {
+		return "", b, ErrInvalidUTF8
+	}
+	if UnsafeStringDecode {
+		return UnsafeString(v), o, nil
+	}
+	return string(v), o, nil
 }
 
 // ReadMapKeyZC reads a map key expecting a text string and returns its bytes zero-copy.
 // It is a thin wrapper around ReadStringZC for generated code compatibility.
 func ReadMapKeyZC(b []byte) (v []byte, o []byte, err error) {
-    // For CBOR, map keys are typically text. Support text zero-copy here.
-    if len(b) < 1 { return nil, b, ErrShortBytes }
-    if getMajorType(b[0]) != majorTypeText {
-        // Fallback: treat as text anyway to surface a type error consistently
-        return nil, b, TypeError{Method: StrType, Encoded: getType(b[0])}
-    }
-    return ReadStringZC(b)
+	// For CBOR, map keys are typically text. Support text zero-copy here.
+	if len(b) < 1 {
+		return nil, b, ErrShortBytes
+	}
+	if getMajorType(b[0]) != majorTypeText {
+		// Fallback: treat as text anyway to surface a type error consistently
+		return nil, b, TypeError{Method: StrType, Encoded: getType(b[0])}
+	}
+	return ReadStringZC(b)
 }
 
 // ReadSimpleValue reads a simple value and returns its numeric value.
@@ -612,54 +680,77 @@ func ReadSimpleValue(b []byte) (val uint8, o []byte, err error) {
 
 // ReadTimeBytes reads a time.Time (CBOR tag 1 with Unix timestamp)
 func ReadTimeBytes(b []byte) (t time.Time, o []byte, err error) {
-    if len(b) < 2 {
-        return time.Time{}, b, ErrShortBytes
-    }
-    if getMajorType(b[0]) != majorTypeTag {
-        return time.Time{}, b, badPrefix(getMajorType(b[0]), majorTypeTag)
-    }
-    tag, o, err := readUintCore(b, majorTypeTag)
-    if err != nil { return time.Time{}, b, err }
-    if tag != tagEpochDateTime { return time.Time{}, b, errors.New("cbor: expected epoch datetime tag") }
-    if len(o) < 1 { return time.Time{}, b, ErrShortBytes }
-    switch getMajorType(o[0]) {
-    case majorTypeUint, majorTypeNegInt:
-        sec, o2, e := ReadInt64Bytes(o)
-        if e != nil { return time.Time{}, b, e }
-        return time.Unix(sec, 0), o2, nil
-    case majorTypeSimple:
-        add := getAddInfo(o[0])
-        switch add {
-        case simpleFloat64:
-            f, o2, e := ReadFloat64Bytes(o)
-            if e != nil { return time.Time{}, b, e }
-            sec := math.Floor(f)
-            ns := int64(math.Round((f - sec) * 1e9))
-            secs := int64(sec)
-            if ns >= 1e9 { secs++; ns -= 1e9 }
-            return time.Unix(secs, ns), o2, nil
-        case simpleFloat32:
-            f, o2, e := ReadFloat32Bytes(o)
-            if e != nil { return time.Time{}, b, e }
-            sec := math.Floor(float64(f))
-            ns := int64(math.Round((float64(f) - sec) * 1e9))
-            secs := int64(sec)
-            if ns >= 1e9 { secs++; ns -= 1e9 }
-            return time.Unix(secs, ns), o2, nil
-        case simpleFloat16:
-            f, o2, e := ReadFloat16Bytes(o)
-            if e != nil { return time.Time{}, b, e }
-            sec := math.Floor(float64(f))
-            ns := int64(math.Round((float64(f) - sec) * 1e9))
-            secs := int64(sec)
-            if ns >= 1e9 { secs++; ns -= 1e9 }
-            return time.Unix(secs, ns), o2, nil
-        default:
-            return time.Time{}, b, &ErrUnsupportedType{}
-        }
-    default:
-        return time.Time{}, b, &ErrUnsupportedType{}
-    }
+	if len(b) < 2 {
+		return time.Time{}, b, ErrShortBytes
+	}
+	if getMajorType(b[0]) != majorTypeTag {
+		return time.Time{}, b, badPrefix(getMajorType(b[0]), majorTypeTag)
+	}
+	tag, o, err := readUintCore(b, majorTypeTag)
+	if err != nil {
+		return time.Time{}, b, err
+	}
+	if tag != tagEpochDateTime {
+		return time.Time{}, b, errors.New("cbor: expected epoch datetime tag")
+	}
+	if len(o) < 1 {
+		return time.Time{}, b, ErrShortBytes
+	}
+	switch getMajorType(o[0]) {
+	case majorTypeUint, majorTypeNegInt:
+		sec, o2, e := ReadInt64Bytes(o)
+		if e != nil {
+			return time.Time{}, b, e
+		}
+		return time.Unix(sec, 0), o2, nil
+	case majorTypeSimple:
+		add := getAddInfo(o[0])
+		switch add {
+		case simpleFloat64:
+			f, o2, e := ReadFloat64Bytes(o)
+			if e != nil {
+				return time.Time{}, b, e
+			}
+			sec := math.Floor(f)
+			ns := int64(math.Round((f - sec) * 1e9))
+			secs := int64(sec)
+			if ns >= 1e9 {
+				secs++
+				ns -= 1e9
+			}
+			return time.Unix(secs, ns), o2, nil
+		case simpleFloat32:
+			f, o2, e := ReadFloat32Bytes(o)
+			if e != nil {
+				return time.Time{}, b, e
+			}
+			sec := math.Floor(float64(f))
+			ns := int64(math.Round((float64(f) - sec) * 1e9))
+			secs := int64(sec)
+			if ns >= 1e9 {
+				secs++
+				ns -= 1e9
+			}
+			return time.Unix(secs, ns), o2, nil
+		case simpleFloat16:
+			f, o2, e := ReadFloat16Bytes(o)
+			if e != nil {
+				return time.Time{}, b, e
+			}
+			sec := math.Floor(float64(f))
+			ns := int64(math.Round((float64(f) - sec) * 1e9))
+			secs := int64(sec)
+			if ns >= 1e9 {
+				secs++
+				ns -= 1e9
+			}
+			return time.Unix(secs, ns), o2, nil
+		default:
+			return time.Time{}, b, &ErrUnsupportedType{}
+		}
+	default:
+		return time.Time{}, b, &ErrUnsupportedType{}
+	}
 }
 
 // ReadTagBytes reads a semantic tag value (major type 6)
@@ -693,18 +784,26 @@ func ReadRFC3339TimeBytes(b []byte) (t time.Time, o []byte, err error) {
 
 // ReadBase64URLStringBytes reads tag(33) base64url text string
 func ReadBase64URLStringBytes(b []byte) (s string, o []byte, err error) {
-    tag, o, err := ReadTagBytes(b)
-    if err != nil { return "", b, err }
-    if tag != tagBase64URLString { return "", b, badPrefix(majorTypeTag, majorTypeTag) }
-    return ReadStringBytes(o)
+	tag, o, err := ReadTagBytes(b)
+	if err != nil {
+		return "", b, err
+	}
+	if tag != tagBase64URLString {
+		return "", b, badPrefix(majorTypeTag, majorTypeTag)
+	}
+	return ReadStringBytes(o)
 }
 
 // ReadBase64StringBytes reads tag(34) base64 text string
 func ReadBase64StringBytes(b []byte) (s string, o []byte, err error) {
-    tag, o, err := ReadTagBytes(b)
-    if err != nil { return "", b, err }
-    if tag != tagBase64String { return "", b, badPrefix(majorTypeTag, majorTypeTag) }
-    return ReadStringBytes(o)
+	tag, o, err := ReadTagBytes(b)
+	if err != nil {
+		return "", b, err
+	}
+	if tag != tagBase64String {
+		return "", b, badPrefix(majorTypeTag, majorTypeTag)
+	}
+	return ReadStringBytes(o)
 }
 
 // ReadURIStringBytes reads a tag(32) URI text string
@@ -789,37 +888,57 @@ func ReadUUIDBytes(b []byte) (uuid [16]byte, o []byte, err error) {
 
 // ReadRegexpStringBytes reads tag(35) regular expression pattern as text string
 func ReadRegexpStringBytes(b []byte) (pattern string, o []byte, err error) {
-    tag, o, err := ReadTagBytes(b)
-    if err != nil { return "", b, err }
-    if tag != tagRegexp { return "", b, badPrefix(majorTypeTag, majorTypeTag) }
-    return ReadStringBytes(o)
+	tag, o, err := ReadTagBytes(b)
+	if err != nil {
+		return "", b, err
+	}
+	if tag != tagRegexp {
+		return "", b, badPrefix(majorTypeTag, majorTypeTag)
+	}
+	return ReadStringBytes(o)
 }
 
 // ReadMIMEStringBytes reads tag(36) MIME message as text string
 func ReadMIMEStringBytes(b []byte) (mime string, o []byte, err error) {
-    tag, o, err := ReadTagBytes(b)
-    if err != nil { return "", b, err }
-    if tag != tagMIME { return "", b, badPrefix(majorTypeTag, majorTypeTag) }
-    return ReadStringBytes(o)
+	tag, o, err := ReadTagBytes(b)
+	if err != nil {
+		return "", b, err
+	}
+	if tag != tagMIME {
+		return "", b, badPrefix(majorTypeTag, majorTypeTag)
+	}
+	return ReadStringBytes(o)
 }
 
 // StripSelfDescribeCBOR checks for and consumes a self-describe CBOR tag (0xd9d9f7)
 func StripSelfDescribeCBOR(b []byte) (rest []byte, found bool, err error) {
-    if len(b) < 1 { return b, false, ErrShortBytes }
-    if getMajorType(b[0]) != majorTypeTag { return b, false, nil }
-    tag, o, e := ReadTagBytes(b)
-    if e != nil { return b, false, e }
-    if tag != tagSelfDescribeCBOR { return b, false, nil }
-    return o, true, nil
+	if len(b) < 1 {
+		return b, false, ErrShortBytes
+	}
+	if getMajorType(b[0]) != majorTypeTag {
+		return b, false, nil
+	}
+	tag, o, e := ReadTagBytes(b)
+	if e != nil {
+		return b, false, e
+	}
+	if tag != tagSelfDescribeCBOR {
+		return b, false, nil
+	}
+	return o, true, nil
 }
 
 // ReadRegexpBytes reads tag(35) and compiles the contained pattern into *regexp.Regexp
 func ReadRegexpBytes(b []byte) (re *regexp.Regexp, o []byte, err error) {
-    s, o, err := ReadRegexpStringBytes(b)
-    if err != nil { return nil, b, err }
-    r, e := regexp.Compile(s)
-    if e != nil { return nil, b, e }
-    return r, o, nil
+	s, o, err := ReadRegexpStringBytes(b)
+	if err != nil {
+		return nil, b, err
+	}
+	r, e := regexp.Compile(s)
+	if e != nil {
+		return nil, b, e
+	}
+	return r, o, nil
 }
 
 // ReadBigIntBytes reads a bignum (tag 2 or 3) into a big.Int
@@ -1056,102 +1175,120 @@ func ReadMapNoDupBytes(b []byte) (o []byte, err error) {
 // ForEachSequenceBytes calls onItem for each CBOR item in a CBOR sequence buffer b.
 // The item passed to onItem is a slice referencing b containing exactly one item.
 func ForEachSequenceBytes(b []byte, onItem func(item []byte) error) error {
-    p := b
-    for len(p) > 0 {
-        r, err := Skip(p)
-        if err != nil { return err }
-        seg := p[:len(p)-len(r)]
-        if err := onItem(seg); err != nil { return err }
-        p = r
-    }
-    return nil
+	p := b
+	for len(p) > 0 {
+		r, err := Skip(p)
+		if err != nil {
+			return err
+		}
+		seg := p[:len(p)-len(r)]
+		if err := onItem(seg); err != nil {
+			return err
+		}
+		p = r
+	}
+	return nil
 }
 
 // SplitSequenceBytes splits a CBOR sequence into a slice of item slices referencing the original buffer.
 func SplitSequenceBytes(b []byte) (out [][]byte, err error) {
-    err = ForEachSequenceBytes(b, func(it []byte) error { out = append(out, it); return nil })
-    return out, err
+	err = ForEachSequenceBytes(b, func(it []byte) error { out = append(out, it); return nil })
+	return out, err
 }
 
 // AppendSequence appends a sequence of pre-encoded CBOR items to b.
 // Each item must be a complete CBOR data item.
 func AppendSequence(b []byte, items ...[]byte) []byte {
-    for _, it := range items {
-        b = append(b, it...)
-    }
-    return b
+	for _, it := range items {
+		b = append(b, it...)
+	}
+	return b
 }
 
 // AppendSequenceFunc appends n items produced by fn(i), where each returned []byte is a full CBOR item.
 func AppendSequenceFunc(b []byte, n int, fn func(i int) ([]byte, error)) ([]byte, error) {
-    for i := 0; i < n; i++ {
-        it, err := fn(i)
-        if err != nil { return b, err }
-        b = append(b, it...)
-    }
-    return b, nil
+	for i := 0; i < n; i++ {
+		it, err := fn(i)
+		if err != nil {
+			return b, err
+		}
+		b = append(b, it...)
+	}
+	return b, nil
 }
 
 // ReadOrderedMapBytes reads the next CBOR map (definite or indefinite) and
 // returns a slice of RawPair in the order they appeared on the wire.
 // Each Key and Value contains exactly one CBOR item (copied).
 func ReadOrderedMapBytes(b []byte) (pairs []RawPair, o []byte, err error) {
-    if len(b) < 1 {
-        return nil, b, ErrShortBytes
-    }
-    if getMajorType(b[0]) != majorTypeMap {
-        return nil, b, badPrefix(majorTypeMap, getMajorType(b[0]))
-    }
-    // Indefinite-length map
-    if getAddInfo(b[0]) == addInfoIndefinite {
-        p := b[1:]
-        var scratch []byte
-        for {
-            if len(p) < 1 { return nil, b, ErrShortBytes }
-            if p[0] == makeByte(majorTypeSimple, simpleBreak) {
-                return pairs, p[1:], nil
-            }
-            // Capture raw key
-            r1, err := Skip(p)
-            if err != nil { return nil, b, err }
-            klen := len(p) - len(r1)
-            // Append key bytes into a shared scratch buffer and take a subslice
-            startK := len(scratch)
-            scratch = append(scratch, p[:klen]...)
-            kraw := scratch[startK:]
-            // Capture raw value
-            r2, err := Skip(r1)
-            if err != nil { return nil, b, err }
-            vlen := len(r1) - len(r2)
-            startV := len(scratch)
-            scratch = append(scratch, r1[:vlen]...)
-            vraw := scratch[startV:]
-            pairs = append(pairs, RawPair{Key: kraw, Value: vraw})
-            p = r2
-        }
-    }
-    // Definite-length map
-    sz, p, err := ReadMapHeaderBytes(b)
-    if err != nil { return nil, b, err }
-    pairs = make([]RawPair, 0, sz)
-    var scratch []byte
-    for i := uint32(0); i < sz; i++ {
-        r1, err := Skip(p)
-        if err != nil { return nil, b, err }
-        klen := len(p) - len(r1)
-        startK := len(scratch)
-        scratch = append(scratch, p[:klen]...)
-        kraw := scratch[startK:]
-        r2, err := Skip(r1)
-        if err != nil { return nil, b, err }
-        vlen := len(r1) - len(r2)
-        startV := len(scratch)
-        scratch = append(scratch, r1[:vlen]...)
-        vraw := scratch[startV:]
-        pairs = append(pairs, RawPair{Key: kraw, Value: vraw})
-        p = r2
-    }
-    return pairs, p, nil
+	if len(b) < 1 {
+		return nil, b, ErrShortBytes
+	}
+	if getMajorType(b[0]) != majorTypeMap {
+		return nil, b, badPrefix(majorTypeMap, getMajorType(b[0]))
+	}
+	// Indefinite-length map
+	if getAddInfo(b[0]) == addInfoIndefinite {
+		p := b[1:]
+		var scratch []byte
+		for {
+			if len(p) < 1 {
+				return nil, b, ErrShortBytes
+			}
+			if p[0] == makeByte(majorTypeSimple, simpleBreak) {
+				return pairs, p[1:], nil
+			}
+			// Capture raw key
+			r1, err := Skip(p)
+			if err != nil {
+				return nil, b, err
+			}
+			klen := len(p) - len(r1)
+			// Append key bytes into a shared scratch buffer and take a subslice
+			startK := len(scratch)
+			scratch = append(scratch, p[:klen]...)
+			kraw := scratch[startK:]
+			// Capture raw value
+			r2, err := Skip(r1)
+			if err != nil {
+				return nil, b, err
+			}
+			vlen := len(r1) - len(r2)
+			startV := len(scratch)
+			scratch = append(scratch, r1[:vlen]...)
+			vraw := scratch[startV:]
+			pairs = append(pairs, RawPair{Key: kraw, Value: vraw})
+			p = r2
+		}
+	}
+	// Definite-length map
+	sz, p, err := ReadMapHeaderBytes(b)
+	if err != nil {
+		return nil, b, err
+	}
+	pairs = make([]RawPair, 0, sz)
+	var scratch []byte
+	for i := uint32(0); i < sz; i++ {
+		r1, err := Skip(p)
+		if err != nil {
+			return nil, b, err
+		}
+		klen := len(p) - len(r1)
+		startK := len(scratch)
+		scratch = append(scratch, p[:klen]...)
+		kraw := scratch[startK:]
+		r2, err := Skip(r1)
+		if err != nil {
+			return nil, b, err
+		}
+		vlen := len(r1) - len(r2)
+		startV := len(scratch)
+		scratch = append(scratch, r1[:vlen]...)
+		vraw := scratch[startV:]
+		pairs = append(pairs, RawPair{Key: kraw, Value: vraw})
+		p = r2
+	}
+	return pairs, p, nil
 }
 
 // float16BitsToFloat32 converts IEEE 754 binary16 bits to float32
